@@ -70,6 +70,21 @@ function deriveGraphId(definition: GraphDefinition): string {
   return slug;
 }
 
+/**
+ * Generated-id contract (ADR 0002 §5): readable ids (`from_to_to`, `target_join`)
+ * whenever they match `[A-Za-z][A-Za-z0-9_-]{0,63}` and are unused; otherwise a
+ * deterministic `edge_{n}` / `join_{n}` counter — never truncation. Every
+ * generated id is checked against the full id set used so far (user node ids plus
+ * previously generated ids), so allocation is collision-safe, deterministic, and
+ * idempotent: the same definition always yields the same ids.
+ */
+function counterId(prefix: string, isFree: (id: string) => boolean): string {
+  for (let n = 1; ; n += 1) {
+    const candidate = `${prefix}_${n}`;
+    if (isFree(candidate)) return candidate;
+  }
+}
+
 /** Validate a generic definition, then compile it into a frozen GraphSpec. */
 export function compileGraphDefinition(definition: GraphDefinition): GraphSpec {
   if (!isRecord(definition)) contractError("definition must be an object");
@@ -147,18 +162,44 @@ export function compileGraphDefinition(definition: GraphDefinition): GraphSpec {
     if (sources.size > 1) convergentTargets.add(target);
   }
 
+  // Join ids share the node-id namespace: allocate them (in target declaration
+  // order, before any edges) against the user node ids plus earlier join ids.
+  const usedNodeIds = new Set(nodeIds);
+  const joinIdByTarget = new Map<string, string>();
+  for (const node of definition.nodes) {
+    if (!convergentTargets.has(node.id)) continue;
+    const readable = `${node.id}_join`;
+    const id =
+      NODE_ID_PATTERN.test(readable) && !usedNodeIds.has(readable)
+        ? readable
+        : counterId("join", (candidate) => !usedNodeIds.has(candidate));
+    usedNodeIds.add(id);
+    joinIdByTarget.set(node.id, id);
+  }
+
   const edges: GraphEdge[] = [];
-  const edgeIdCounts = new Map<string, number>();
-  const pushEdge = (from: string, to: string, route?: GraphRoute): void => {
+  const usedEdgeIds = new Set<string>();
+  const isFreeEdgeId = (id: string): boolean => !usedEdgeIds.has(id) && !usedNodeIds.has(id);
+  const nextEdgeId = (from: string, to: string): string => {
     const base = `${from}_to_${to}`;
-    const ordinal = (edgeIdCounts.get(base) ?? 0) + 1;
-    edgeIdCounts.set(base, ordinal);
-    const id = ordinal === 1 ? base : `${base}_${ordinal}`;
+    if (!NODE_ID_PATTERN.test(base)) return counterId("edge", isFreeEdgeId);
+    if (isFreeEdgeId(base)) return base;
+    for (let k = 2; ; k += 1) {
+      const candidate = `${base}_${k}`;
+      if (!NODE_ID_PATTERN.test(candidate)) break;
+      if (isFreeEdgeId(candidate)) return candidate;
+    }
+    return counterId("edge", isFreeEdgeId);
+  };
+  const pushEdge = (from: string, to: string, route?: GraphRoute): void => {
+    const id = nextEdgeId(from, to);
+    usedEdgeIds.add(id);
     edges.push(route === undefined ? { id, from, to } : { id, from, to, route });
   };
 
   for (const route of routes) {
-    const target = convergentTargets.has(route.to) ? `${route.to}_join` : route.to;
+    const joinId = joinIdByTarget.get(route.to);
+    const target = joinId === undefined ? route.to : joinId;
     if (route.when !== undefined) {
       pushEdge(route.from, target, {
         kind: "predicate",
@@ -181,7 +222,8 @@ export function compileGraphDefinition(definition: GraphDefinition): GraphSpec {
   const inputArtifactsFor = (node: GraphDefinitionNode): ArtifactRef[] | undefined => {
     const sources = sourcesByTarget.get(node.id);
     if (sources === undefined || sources.size === 0) return undefined;
-    if (convergentTargets.has(node.id)) return [{ nodeId: `${node.id}_join`, output: "value" }];
+    const joinId = joinIdByTarget.get(node.id);
+    if (joinId !== undefined) return [{ nodeId: joinId, output: "value" }];
     const source = [...sources][0];
     return source === undefined ? undefined : [{ nodeId: source, output: "finalText" }];
   };
@@ -201,10 +243,10 @@ export function compileGraphDefinition(definition: GraphDefinition): GraphSpec {
 
   const joinNodes: GraphNode[] = [];
   for (const node of definition.nodes) {
-    if (convergentTargets.has(node.id)) {
-      joinNodes.push({ kind: "deterministic", id: `${node.id}_join`, operation: "join" });
-      pushEdge(`${node.id}_join`, node.id);
-    }
+    const joinId = joinIdByTarget.get(node.id);
+    if (joinId === undefined) continue;
+    joinNodes.push({ kind: "deterministic", id: joinId, operation: "join" });
+    pushEdge(joinId, node.id);
   }
 
   const roles: Record<string, ExecutionDefaults> = {};
