@@ -37,6 +37,20 @@ export {
   validateGraphPreflight,
   validateGraphSpec,
 } from "./graph.js";
+export type { GraphDefinition, GraphDefinitionNode, GraphDefinitionRoute } from "./graph-definition.js";
+export { compileGraphDefinition } from "./graph-definition.js";
+export type { GraphDisplay, GraphDisplayOptions } from "./graph-display.js";
+export { createWidgetGraphDisplay, renderGraphSnapshotLines, renderGraphSnapshotText } from "./graph-display.js";
+export type { GraphRunRegistryStartOptions } from "./graph-registry.js";
+export { GraphRunRegistry } from "./graph-registry.js";
+export type { WorkflowGraphToolInput, WorkflowGraphToolOptions } from "./graph-tool.js";
+export { createWorkflowGraphTool } from "./graph-tool.js";
+export type { StagedWorkflowPolicy } from "./staged-workflow.js";
+export {
+  compileStagedWorkflowGraph,
+  STAGED_WORKFLOW_MAX_ROUNDS,
+  stagedReviewVerdictInstruction,
+} from "./staged-workflow.js";
 export type { StructuredOutputCapture, StructuredOutputToolOptions } from "./structured-output.js";
 export { createStructuredOutputTool } from "./structured-output.js";
 export type {
