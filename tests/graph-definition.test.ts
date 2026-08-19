@@ -283,3 +283,91 @@ test("route and node validation failures throw invalid_graph", () => {
   assertThrowsInvalidGraph(() => compileGraphDefinition({ nodes: [{ id: "a", prompt: "" }], routes: [] }));
   assertThrowsInvalidGraph(() => compileGraphDefinition({ nodes, routes: [{ from: "a", to: "b", when: "" }] }));
 });
+
+// Generated ids share the 64-char [A-Za-z][A-Za-z0-9_-]{0,63} node-id namespace;
+// these cases pin the counter fallbacks and author-name collisions.
+const LONG_TARGET = "t".repeat(60);
+
+function compileTwiceIdentical(definition: GraphDefinition): ReturnType<typeof compileGraphDefinition> {
+  const first = JSON.stringify(compileGraphDefinition(definition));
+  const second = compileGraphDefinition(definition);
+  assert.equal(JSON.stringify(second), first, "compile must be idempotent");
+  return second;
+}
+
+function findJoin(graph: ReturnType<typeof compileGraphDefinition>, id: string) {
+  const join = graph.nodes.find((node) => node.id === id);
+  assert.ok(join, `expected join node ${id}`);
+  return join;
+}
+
+test("64-char target names force join and edge counter fallbacks", () => {
+  assert.ok(`${LONG_TARGET}_join`.length > 64, "LONG_TARGET + _join must exceed the 64-char id limit");
+  const graph = compileTwiceIdentical({
+    name: "long-target",
+    nodes: [
+      { id: "a", prompt: "A" },
+      { id: "b", prompt: "B" },
+      { id: LONG_TARGET, prompt: "T" },
+    ],
+    routes: [
+      { from: "a", to: LONG_TARGET },
+      { from: "b", to: LONG_TARGET },
+    ],
+  });
+  assert.equal(
+    graph.nodes.some((node) => node.id === `${LONG_TARGET}_join`),
+    false,
+  );
+  assert.equal(findJoin(graph, "join_1").kind, "deterministic");
+  const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+  assert.deepEqual(byId.get(LONG_TARGET)?.inputArtifacts, [{ nodeId: "join_1", output: "value" }]);
+  const joinToTarget = graph.edges.find((edge) => edge.from === "join_1" && edge.to === LONG_TARGET);
+  assert.ok(joinToTarget, "expected a join_1 -> LONG_TARGET edge");
+  assert.equal(joinToTarget.id, "edge_1", "join_1_to_<target> exceeds 64 chars, so the edge falls back to the counter");
+});
+
+test("author node named done_join does not collide with the auto-join for done", () => {
+  const graph = compileTwiceIdentical({
+    name: "done-join-collision",
+    nodes: [
+      { id: "a", prompt: "A" },
+      { id: "b", prompt: "B" },
+      { id: "done", prompt: "D" },
+      { id: "done_join", prompt: "author-bound node" },
+    ],
+    routes: [
+      { from: "a", to: "done" },
+      { from: "b", to: "done" },
+    ],
+  });
+  assert.equal(graph.nodes.filter((node) => node.id === "done_join").length, 1, "author node kept, no duplicate");
+  assert.equal(findJoin(graph, "join_1").kind, "deterministic");
+  assert.equal(
+    graph.nodes.some((node) => node.id === "done_join" && node.kind === "deterministic"),
+    false,
+  );
+  const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+  assert.deepEqual(byId.get("done")?.inputArtifacts, [{ nodeId: "join_1", output: "value" }]);
+});
+
+test("author node named edge_1 forces the counter to skip to edge_2", () => {
+  const graph = compileTwiceIdentical({
+    name: "edge-counter-collision",
+    nodes: [
+      { id: "a", prompt: "A" },
+      { id: "b", prompt: "B" },
+      { id: LONG_TARGET, prompt: "T" },
+      { id: "edge_1", prompt: "author-bound node" },
+    ],
+    routes: [
+      { from: "a", to: LONG_TARGET },
+      { from: "b", to: LONG_TARGET },
+    ],
+  });
+  assert.equal(graph.nodes.filter((node) => node.id === "edge_1").length, 1, "author node kept, no duplicate");
+  assert.equal(findJoin(graph, "join_1").kind, "deterministic");
+  const joinToTarget = graph.edges.find((edge) => edge.from === "join_1" && edge.to === LONG_TARGET);
+  assert.ok(joinToTarget, "expected a join_1 -> LONG_TARGET edge");
+  assert.equal(joinToTarget.id, "edge_2", "edge_1 is taken by the author node, so the counter skips to edge_2");
+});
