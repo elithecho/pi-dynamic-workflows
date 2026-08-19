@@ -43,6 +43,7 @@ export type { GraphDisplay, GraphDisplayOptions } from "./graph-display.js";
 export { createWidgetGraphDisplay, renderGraphSnapshotLines, renderGraphSnapshotText } from "./graph-display.js";
 export type { GraphRunRegistryStartOptions } from "./graph-registry.js";
 export { GraphRunRegistry } from "./graph-registry.js";
+export { compileGraphScript, GraphScriptError } from "./graph-script.js";
 export type { WorkflowGraphToolInput, WorkflowGraphToolOptions } from "./graph-tool.js";
 export { createWorkflowGraphTool } from "./graph-tool.js";
 export type { StagedWorkflowPolicy } from "./staged-workflow.js";

@@ -170,6 +170,72 @@ function makeFanOutGraph(maxConcurrency?: number): GraphSpec {
 
 const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 10));
 
+const FIX_OR_SHIP_SCRIPT = `export const meta = { name: 'fix_or_ship', description: 'Coder → review → fix then ship, or ship directly.' }
+
+const coder  = agent('You are a coder agent. Read the coder skill and implement the change.', { role: 'implementation' })
+const review = agent('Review the change. Respond with exactly <verdict>change</verdict> or <verdict>pass</verdict>.', { role: 'reviewer' })
+const fixer  = agent('Apply the requested changes.', { role: 'implementation' })
+const done   = agent('Finalize and report.', { role: 'verifier' })
+
+coder.to(review)
+review.when('<verdict>change</verdict>', fixer).otherwise(done)
+fixer.to(done)`;
+
+const FIX_OR_SHIP_GRAPH: GraphSpec = {
+  version: 1,
+  id: "fix_or_ship",
+  name: "fix_or_ship",
+  nodes: [
+    {
+      kind: "agent",
+      id: "coder",
+      prompt: "You are a coder agent. Read the coder skill and implement the change.",
+      role: "implementation",
+    },
+    {
+      kind: "agent",
+      id: "review",
+      prompt: "Review the change. Respond with exactly <verdict>change</verdict> or <verdict>pass</verdict>.",
+      role: "reviewer",
+      inputArtifacts: [{ nodeId: "coder", output: "finalText" }],
+    },
+    {
+      kind: "agent",
+      id: "fixer",
+      prompt: "Apply the requested changes.",
+      role: "implementation",
+      inputArtifacts: [{ nodeId: "review", output: "finalText" }],
+    },
+    {
+      kind: "agent",
+      id: "done",
+      prompt: "Finalize and report.",
+      role: "verifier",
+      inputArtifacts: [{ nodeId: "done_join", output: "value" }],
+    },
+    { kind: "deterministic", id: "done_join", operation: "join" },
+  ],
+  edges: [
+    { id: "coder_to_review", from: "coder", to: "review" },
+    {
+      id: "review_to_fixer",
+      from: "review",
+      to: "fixer",
+      route: {
+        kind: "predicate",
+        predicate: {
+          type: "finalText",
+          regex: { source: "finalText", pattern: "<verdict>change</verdict>" },
+        },
+      },
+    },
+    { id: "review_to_done_join", from: "review", to: "done_join", route: { kind: "otherwise" } },
+    { id: "fixer_to_done_join", from: "fixer", to: "done_join" },
+    { id: "done_join_to_done", from: "done_join", to: "done" },
+  ],
+  roles: { implementation: {}, reviewer: {}, verifier: {} },
+};
+
 test("the tool is registered under the name workflow_graph", () => {
   const tool = createWorkflowGraphTool();
   assert.equal(tool.name, "workflow_graph");
@@ -310,24 +376,59 @@ test("cancel aborts an active node and rejects a second cancel", async () => {
   );
 });
 
-test("graph vs script disambiguation rejects scripts and passes through raw graph values", () => {
+test("script compiles into a graph at prepareArguments (canonical fixture)", () => {
   const tool = createWorkflowGraphTool({ getThinkingLevel: () => "medium" });
-  assert.throws(
-    () => tool.prepareArguments?.({ operation: "start", script: "export const meta = {}" }),
-    /does not accept a .script/,
-  );
+  const prepared = tool.prepareArguments?.({ operation: "start", script: FIX_OR_SHIP_SCRIPT });
+  assert.deepEqual(prepared?.graph, FIX_OR_SHIP_GRAPH);
+});
+
+test("graph and definition pass through prepareArguments unchanged", () => {
+  const tool = createWorkflowGraphTool({ getThinkingLevel: () => "medium" });
   const prepared = tool.prepareArguments?.({ operation: "start", graph: 123 });
   assert.equal(prepared?.graph, 123);
   const definition = { nodes: [{ id: "a", prompt: "A" }], routes: [] };
   const preparedDefinition = tool.prepareArguments?.({ operation: "start", definition });
   assert.deepEqual(preparedDefinition?.definition, definition);
-  assert.throws(
-    () => tool.prepareArguments?.({ operation: "start", graph: {}, definition: {} }),
-    /exactly one of `graph` or `definition`/,
-  );
 
   const legacy = createWorkflowTool();
   assert.throws(() => legacy.prepareArguments?.({ graph: { version: 1 } }), /script. to be a string/);
+});
+
+test("graph, definition, and script are mutually exclusive for start", () => {
+  const tool = createWorkflowGraphTool({ getThinkingLevel: () => "medium" });
+  const conflict = /mutually exclusive/;
+  assert.throws(() => tool.prepareArguments?.({ operation: "start", graph: {}, definition: {} }), conflict);
+  assert.throws(
+    () =>
+      tool.prepareArguments?.({
+        operation: "start",
+        graph: {},
+        script: "export const meta = { name: 'x', description: 'y' }",
+      }),
+    conflict,
+  );
+  assert.throws(
+    () =>
+      tool.prepareArguments?.({
+        operation: "start",
+        definition: {},
+        script: "export const meta = { name: 'x', description: 'y' }",
+      }),
+    conflict,
+  );
+  assert.throws(() => tool.prepareArguments?.({ operation: "start" }), /requires exactly one/);
+});
+
+test("a script that fails compileGraphScript rejects with the script error code", () => {
+  const tool = createWorkflowGraphTool({ getThinkingLevel: () => "medium" });
+  const useBeforeDeclaration = `export const meta = { name: 'x', description: 'y' }
+const a = agent('A')
+b.to(a)
+const b = agent('B')`;
+  assert.throws(
+    () => tool.prepareArguments?.({ operation: "start", script: useBeforeDeclaration }),
+    /script_use_before_declaration/,
+  );
 });
 
 test("start with a raw JavaScript string graph fails with invalid_graph", async () => {

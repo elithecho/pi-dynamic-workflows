@@ -17,6 +17,7 @@ import { compileGraphDefinition, type GraphDefinition } from "./graph-definition
 import { createWidgetGraphDisplay, renderGraphSnapshotText } from "./graph-display.js";
 import { GraphRunRegistry } from "./graph-registry.js";
 import type { NodeExecutor } from "./graph-runtime.js";
+import { compileGraphScript } from "./graph-script.js";
 
 export interface WorkflowGraphToolOptions {
   readonly cwd?: string;
@@ -35,6 +36,7 @@ export type WorkflowGraphToolInput = {
   readonly operation: "start" | "status" | "wait" | "cancel";
   readonly graph?: unknown;
   readonly definition?: unknown;
+  readonly script?: string;
   readonly runId?: string;
   readonly timeoutMs?: number;
   readonly reason?: string;
@@ -47,6 +49,12 @@ const workflowGraphToolSchema = Type.Object({
     Type.Any({
       description:
         "Generic graph definition ({ name?, nodes: [{id, prompt, role?, model?, thinking?}], routes: [{from,to,when?,flags?} | {from,to,otherwise:true}], budgets? }) for start. Compiled to a GraphSpec.",
+    }),
+  ),
+  script: Type.Optional(
+    Type.String({
+      description:
+        "v1 Graph JS DSL source. Mutually exclusive with `graph` and `definition`. See docs/adr/0002-graph-script-dsl.md.",
     }),
   ),
   runId: Type.Optional(Type.String({ description: "runId for status/wait/cancel." })),
@@ -72,13 +80,15 @@ export function createWorkflowGraphTool(
     name: "workflow_graph",
     label: "Workflow Graph",
     description:
-      "Run a declarative graph workflow in the background: pass a concise generic graph definition (nodes + routes with regex `when`/`otherwise` branches) or a raw GraphSpec; start returns a runId immediately; status/wait/cancel manage that process-local run. Distinct from the legacy JavaScript `workflow` tool.",
+      "Run a declarative graph workflow in the background. The recommended authoring surface is a `script` — a small declarative JS DSL (`export const meta = { name, description }` first, `const <id> = agent(prompt, opts?)` declarations, edges with `to` / `when(...).otherwise(...)`, at most one `budget({...})`) compiled into a GraphSpec; `definition` (JSON nodes/routes) and `graph` (raw GraphSpec) remain as escape hatches. start returns a runId immediately; status/wait/cancel manage that process-local run. Distinct from the legacy imperative JavaScript `workflow` tool.",
     promptSnippet:
-      'Run a declarative graph workflow. Pass operation "start" with a graph definition (nodes + routes with `when`/`otherwise` regex branches) or a raw GraphSpec v1 JSON object (graph); start returns a runId immediately — poll with "status"/"wait", stop with "cancel".',
+      "Run a declarative graph workflow. For operation \"start\", pass exactly one of: `script` (a v1 Graph JS DSL source, e.g. `export const meta = { name: 'demo', description: 'Demo graph.' }\nconst a = agent('Do A.')\nconst b = agent('Do B.')\na.to(b)`), `definition` (JSON nodes/routes), or `graph` (raw GraphSpec v1 JSON). start returns a runId immediately — poll with \"status\"/\"wait\", stop with \"cancel\".",
     promptGuidelines: [
-      "Use workflow_graph for declarative graph work; do NOT use it for imperative JavaScript scripts — that is the legacy `workflow` tool.",
-      "For start, pass a `definition` ({name?, nodes: [{id, prompt, role?, model?, thinking?}], routes: [{from, to, when?, flags?} | {from, to, otherwise: true}], budgets?}) or a raw `graph` GraphSpec v1 JSON object ({version:1,id,name,nodes,edges}).",
-      "A route is bare (always), `when` (regex over the source node's finalText, with optional `flags`), or `otherwise` (fallback when no `when` edge matches). Never pass a raw JavaScript string.",
+      "Author graph workflows as a declarative `script` (v1 Graph JS DSL): `export const meta = { name, description }` is the mandatory first statement; then `const <id> = agent(prompt, { role?, model?, thinking? })` declares an agent node (the node id is the constant's binding name); edges via `<source>.to(<target>)` (always) or `<source>.when('<regex>', <target>).otherwise(<fallback>)` (regex-routed with a fallback); at most one `budget({ maxConcurrency?, ... })`.",
+      "Canonical example (docs/adr/0002-graph-script-dsl.md §6): `export const meta = { name: 'fix_or_ship', description: 'Coder to review to fix then ship, or ship directly.' }\nconst coder = agent('Implement the change.', { role: 'implementation' })\nconst review = agent('Review the change.', { role: 'reviewer' })\nconst fixer = agent('Apply requested changes.', { role: 'implementation' })\nconst done = agent('Finalize and report.', { role: 'verifier' })\ncoder.to(review)\nreview.when('<verdict>change</verdict>', fixer).otherwise(done)\nfixer.to(done)`.",
+      "`definition` (JSON `{name?, nodes: [{id, prompt, role?, model?, thinking?}], routes: [{from, to, when?, flags?} | {from, to, otherwise: true}], budgets?}`) and `graph` (raw GraphSpec v1 JSON `{version:1,id,name,nodes,edges}`) are data-oriented escape hatches for programmatic builders; `script` is the recommended authoring surface.",
+      "For start, pass exactly one of `script`, `definition`, or `graph` — never more than one, and never combine them.",
+      "workflow_graph is declarative: do NOT write imperative `await agent(...)` / `parallel(...)` scripts here — that is the legacy `workflow` tool.",
       "start returns a runId immediately and the graph runs in the background; the main agent stays available for other work.",
       'Use operation "status" or "wait" with the runId to observe a run; use operation "cancel" to stop it.',
       "Progress and completion are surfaced through the workflow_graph UI widget, not through a follow-up agent turn.",
@@ -218,18 +228,30 @@ function normalizeWorkflowGraphToolArgs(args: unknown): WorkflowGraphToolInput {
   if (operation !== "start" && operation !== "status" && operation !== "wait" && operation !== "cancel") {
     throw new Error('workflow_graph operation must be one of "start", "status", "wait", "cancel"');
   }
-  if ("script" in value) {
-    throw new Error(
-      "workflow_graph does not accept a `script`; pass `graph` or `definition`. Use the legacy `workflow` tool for JavaScript scripts.",
-    );
-  }
   const timeoutMs = value.timeoutMs === undefined ? undefined : requireTimeoutMs(value.timeoutMs);
   const reason = value.reason === undefined ? undefined : requireReasonString(value.reason);
   if (operation === "start") {
     const hasGraph = value.graph !== undefined;
     const hasDefinition = value.definition !== undefined;
-    if (hasGraph === hasDefinition) {
-      throw new Error('workflow_graph "start" requires exactly one of `graph` or `definition`');
+    const hasScript = value.script !== undefined;
+    const providedCount = (hasGraph ? 1 : 0) + (hasDefinition ? 1 : 0) + (hasScript ? 1 : 0);
+    if (providedCount > 1) {
+      const provided = [hasScript && "`script`", hasDefinition && "`definition`", hasGraph && "`graph`"]
+        .filter((entry): entry is string => typeof entry === "string")
+        .join(" and ");
+      throw new Error(
+        `workflow_graph "start" inputs are mutually exclusive — received ${provided}; pass exactly one of \`script\`, \`definition\`, or \`graph\``,
+      );
+    }
+    if (providedCount === 0) {
+      throw new Error('workflow_graph "start" requires exactly one of `script`, `definition`, or `graph`');
+    }
+    if (hasScript) {
+      try {
+        return { operation, graph: compileGraphScript(value.script as string), timeoutMs, reason };
+      } catch (error) {
+        throw toolFailure("start", error);
+      }
     }
     return { operation, graph: value.graph, definition: value.definition, timeoutMs, reason };
   }
