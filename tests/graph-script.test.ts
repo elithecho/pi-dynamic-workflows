@@ -258,3 +258,62 @@ a.when('a+b', b).otherwise(b)
   // loc is attributed to the offending (last processed) statement
   assert.deepEqual(wrapped.loc, { line: 4, column: 0 });
 });
+
+// --- 6. Bypass matrix: sandbox-escape-relevant vectors (all script_not_declarative) ---
+test("top-level return is script_not_declarative", () => {
+  const script = `export const meta = { name: 't', description: 't' }
+return 1
+`;
+  assertScriptError(script, "script_not_declarative");
+});
+
+test("for loop is script_not_declarative", () => {
+  const script = `export const meta = { name: 't', description: 't' }
+for (let i = 0; i < 1; i++) { agent('x') }
+`;
+  assertScriptError(script, "script_not_declarative");
+});
+
+test("while loop is script_not_declarative", () => {
+  const script = `export const meta = { name: 't', description: 't' }
+while (true) { agent('x') }
+`;
+  assertScriptError(script, "script_not_declarative");
+});
+
+test("function declaration is script_not_declarative", () => {
+  const script = `export const meta = { name: 't', description: 't' }
+function foo() {}
+`;
+  assertScriptError(script, "script_not_declarative");
+});
+
+test("arrow function const is script_not_declarative", () => {
+  const script = `export const meta = { name: 't', description: 't' }
+const f = () => 1
+`;
+  assertScriptError(script, "script_not_declarative");
+});
+
+test("assignment to an unbound identifier is script_not_declarative", () => {
+  const script = `export const meta = { name: 't', description: 't' }
+const x = agent('x')
+y = x
+`;
+  assertScriptError(script, "script_not_declarative");
+});
+
+test("member-assignment update is script_not_declarative", () => {
+  const script = `export const meta = { name: 't', description: 't' }
+const x = agent('x')
+x.prompt = 'evil'
+`;
+  assertScriptError(script, "script_not_declarative");
+});
+
+test("top-level import is script_not_declarative", () => {
+  const script = `export const meta = { name: 't', description: 't' }
+import x from 'y'
+`;
+  assertScriptError(script, "script_not_declarative");
+});
