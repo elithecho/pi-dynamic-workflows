@@ -24,6 +24,23 @@ Then in Pi:
 
 That's it. The extension registers a `workflow` tool and activates it on session start.
 
+## Skill
+
+This repo ships a Pi skill at `skills/pi-workflow/SKILL.md` for agents that want to author these tools without re-reading the DSL. Install it with one of:
+
+```bash
+# npm
+npx skills add https://github.com/elithecho/pi-dynamic-workflow --skill pi-workflow
+
+# pnpm
+pnpx skills add https://github.com/elithecho/pi-dynamic-workflow --skill pi-workflow
+
+# bun
+bunx skills add https://github.com/elithecho/pi-dynamic-workflow --skill pi-workflow
+```
+
+An installable Pi skill for agents lives at [`skills/pi-workflow/SKILL.md`](skills/pi-workflow/SKILL.md).
+
 ## Usage
 
 Just ask Pi for a workflow in plain language:
@@ -44,6 +61,8 @@ The model will write a workflow script and call the `workflow` tool. Live progre
 ```
 
 Press `Esc` to cancel a running workflow. Active subagents are aborted and surfaced as skipped.
+
+For an agent-facing how-to guide, see [`docs/usage.md`](docs/usage.md).
 
 ## Workflow script shape
 
