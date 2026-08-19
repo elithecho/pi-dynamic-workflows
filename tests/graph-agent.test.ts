@@ -387,6 +387,36 @@ test("nested orchestration tools are never added to sessions", async () => {
   assert.ok(!toolNames.includes("agent"), "no agent tool");
 });
 
+test("finalText is empty when the final assistant message carries no text", async () => {
+  const messages = [
+    message("user", "task"),
+    message("assistant", [{ type: "text", text: "intermediate note" }]),
+    message("assistant", [{ type: "toolCall", id: "1", name: "structured_output", arguments: {} }]),
+  ];
+  const factory = new FakeSessionFactory(() => ({ messages }));
+  const runner = new GraphAgentRunner({ modelRegistry: registry, sessionFactory: factory.factoryImpl });
+  const result = await runner.execute(makeRequest({ id: "node" }, resolvedFrom()));
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.output.finalText, "", "must not fall back to an earlier intermediate assistant message");
+  }
+});
+
+test("a throwing session factory reports failure and never leaks a session", async () => {
+  const runner = new GraphAgentRunner({
+    modelRegistry: registry,
+    sessionFactory: async () => {
+      throw new Error("auth storage unavailable");
+    },
+  });
+  const result = await runner.execute(makeRequest({ id: "node" }, resolvedFrom()));
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.error.code, "invalid_state");
+    assert.match(result.error.message, /failed to create session/);
+  }
+});
+
 test("executor rejects a malformed result from the session boundary", async () => {
   const factory = new FakeSessionFactory(() => ({
     messages: [message("assistant", [{ type: "toolCall", id: "1", name: "bash", arguments: {} }])],

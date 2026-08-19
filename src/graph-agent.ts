@@ -72,14 +72,19 @@ export function sumAssistantUsage(messages: readonly unknown[]): Usage | undefin
   };
 }
 
-/** Capture ONLY the last assistant message's text (never thinking/tool content). */
+/**
+ * Capture ONLY the last assistant message's text (never thinking/tool content).
+ *
+ * The contract defines finalText as the producing agent's final assistant
+ * message: if that message carries no text (e.g. a terminating toolCall), the
+ * result is empty rather than backing up to an earlier intermediate message.
+ */
 export function lastAssistantText(messages: readonly unknown[]): string {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index] as Partial<AssistantMessage> | undefined;
     if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
     const parts = message.content.filter((part): part is TextContent => part.type === "text");
-    const text = parts.map((part) => part.text).join("");
-    if (text.trim()) return text;
+    return parts.map((part) => part.text).join("");
   }
   return "";
 }
@@ -161,7 +166,9 @@ export class GraphAgentRunner implements NodeExecutor {
       );
     }
     if (resolvedContext === undefined) {
-      return this.fail(node.id, "missing_parent_model", "the engine did not provide a resolved context");
+      // The engine always supplies a resolved context; this guards direct
+      // callers from a structurally invalid request, not a missing parent.
+      return this.fail(node.id, "invalid_state", "the request did not provide a resolved context");
     }
     const model = this.modelRegistry.find(resolvedContext.model.provider, resolvedContext.model.modelId);
     if (model === undefined) {
@@ -187,7 +194,14 @@ export class GraphAgentRunner implements NodeExecutor {
       model,
       thinkingLevel: resolvedContext.thinking,
     };
-    const { session, abortTimer, timedOut } = await this.createWithTimeout(node.id, sessionOptions);
+    let session: GraphSession;
+    let abortTimer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut: () => boolean;
+    try {
+      ({ session, abortTimer, timedOut } = await this.createWithTimeout(node.id, sessionOptions));
+    } catch (error) {
+      return this.fail(node.id, "invalid_state", `failed to create session for ${node.id}: ${formatError(error)}`);
+    }
     let removeAbortListener: (() => void) | undefined;
     try {
       if (request.signal.aborted) {

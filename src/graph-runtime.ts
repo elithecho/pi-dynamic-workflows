@@ -256,6 +256,7 @@ class GraphRunEngine implements GraphRunHandle {
   private cancelRequested = false;
   private budgetStopped = false;
   private pumpScheduled = false;
+  private removeParentListener: (() => void) | undefined;
   private resolveDone!: (snapshot: GraphRunSnapshot) => void;
   readonly done: Promise<GraphRunSnapshot> = new Promise((resolve) => {
     this.resolveDone = resolve;
@@ -303,7 +304,11 @@ class GraphRunEngine implements GraphRunHandle {
       this.cancel("parent_aborted");
       return;
     }
-    this.options.parentSignal?.addEventListener("abort", () => this.cancel("parent_aborted"));
+    if (this.options.parentSignal !== undefined) {
+      const onAbort = () => this.cancel("parent_aborted");
+      this.options.parentSignal.addEventListener("abort", onAbort, { once: true });
+      this.removeParentListener = () => this.options.parentSignal?.removeEventListener("abort", onAbort);
+    }
     this.schedulePump();
   }
 
@@ -368,7 +373,15 @@ class GraphRunEngine implements GraphRunHandle {
       await this.done;
       return { run: this.snapshot(), completed: true };
     }
-    await Promise.race([this.done, new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, timeoutMs);
+    });
+    try {
+      await Promise.race([this.done, timeout]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
     return { run: this.snapshot(), completed: this.isTerminal() };
   }
 
@@ -629,6 +642,7 @@ class GraphRunEngine implements GraphRunHandle {
 
   private runDeterministicNode(runtime: NodeRuntime): void {
     const node = runtime.node as DeterministicNode;
+    runtime.attempt += 1;
     this.transition(runtime, "running");
     try {
       const value = node.operation === "join" ? this.joinValue(node) : this.publishValue(node);
@@ -773,6 +787,8 @@ class GraphRunEngine implements GraphRunHandle {
 
   private finalizeRun(): void {
     if (this.isTerminal()) return;
+    this.removeParentListener?.();
+    this.removeParentListener = undefined;
     const failed = this.runtimes.find((runtime) => runtime.state === "failed");
     if (this.cancelRequested) {
       this.runState = "cancelled";

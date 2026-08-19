@@ -429,6 +429,7 @@ test("deterministic join/publish nodes produce artifacts consumed downstream", a
   assert.equal(snapshot.state, "succeeded");
   const joinNode = snapshot.nodes.find((node) => node.id === "join");
   assert.equal(joinNode?.state, "succeeded");
+  assert.equal(joinNode?.attempt, 1, "deterministic nodes report attempt 1 after executing");
   const joinArtifact = snapshot.artifacts.find((artifact) => artifact.nodeId === "join");
   assert.ok(joinArtifact, "join produced an artifact");
   assert.deepEqual(joinArtifact.value, { a: "from-a", b: "from-b" }, "join aggregates active incoming finalText");
@@ -557,4 +558,191 @@ test("run handles expose stable runId and events", async () => {
   assert.equal(snapshot.runId, "custom-run");
   assert.equal(snapshot.graphId, "stable");
   assert.ok(handle.events().length >= 2);
+});
+
+test("node failure while budget is exhausted still fails the run", async () => {
+  const graph: GraphSpec = {
+    version: 1,
+    id: "budget-fail",
+    name: "budget fail",
+    nodes: [
+      { kind: "agent", id: "heavy", prompt: "heavy", retry: { maxAttempts: 1 } },
+      { kind: "agent", id: "flaky", prompt: "flaky", retry: { maxAttempts: 1 } },
+      { kind: "agent", id: "consumer", prompt: "consumer" },
+    ],
+    edges: [
+      { id: "heavy-consumer", from: "heavy", to: "consumer" },
+      { id: "flaky-consumer", from: "flaky", to: "consumer" },
+    ],
+    budgets: { maxOutputTokens: 10, maxConcurrency: 2 },
+  };
+  const executor = new FakeExecutor({
+    failFirst: { flaky: 1 },
+    outcomes: {
+      heavy: { finalText: "heavy", usage: { inputTokens: 1, outputTokens: 100, totalTokens: 101 } },
+      flaky: { finalText: "never" },
+      consumer: { finalText: "consumed" },
+    },
+  });
+  const snapshot = await runGraph(graph, { executor, parentContext: parent });
+  assert.equal(snapshot.state, "failed", "a real node failure wins over budget exhaustion");
+  const flaky = snapshot.nodes.find((node) => node.id === "flaky");
+  assert.equal(flaky?.state, "failed");
+  assert.equal(nodeState(snapshot, "consumer"), "skipped");
+  // The consumer's dependency actually failed, so dependency_failed is the
+  // accurate reason even though the run is simultaneously budget-exhausted.
+  assert.equal(skipReason(snapshot, "consumer"), "dependency_failed");
+});
+
+test("budget exhaustion never aborts an in-flight node", async () => {
+  const graph: GraphSpec = {
+    version: 1,
+    id: "budget-inflight",
+    name: "budget in flight",
+    nodes: [
+      { kind: "agent", id: "fast", prompt: "fast" },
+      { kind: "agent", id: "slow", prompt: "slow" },
+    ],
+    edges: [],
+    budgets: { maxConcurrency: 2, maxOutputTokens: 10 },
+  };
+  const delayingExecutor = new FakeExecutor({
+    outcomes: {
+      fast: { finalText: "fast", usage: { inputTokens: 1, outputTokens: 100, totalTokens: 101 } },
+      slow: { finalText: "slow" },
+    },
+  });
+  // Pace each node independently so fast exhausts the budget while slow is
+  // still in flight: delay every execution, then un-delay the resolve by
+  // letting the fake's timer do the work (delayMs applies to all nodes, so use
+  // execution guards to let fast finish first).
+  let fastResolved = false;
+  const original = delayingExecutor.execute.bind(delayingExecutor);
+  delayingExecutor.execute = async (request) => {
+    if (request.node.id === "fast" && !fastResolved) {
+      const result = await original(request);
+      fastResolved = true;
+      return result;
+    }
+    if (request.node.id === "slow") {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return original(request);
+    }
+    return original(request);
+  };
+  const snapshot = await runGraph(graph, { executor: delayingExecutor, parentContext: parent });
+  assert.equal(snapshot.state, "cancelled");
+  assert.equal(snapshot.cancellation?.reason, "budget_exhausted");
+  assert.equal(nodeState(snapshot, "fast"), "succeeded");
+  assert.equal(nodeState(snapshot, "slow"), "succeeded", "in-flight node completed despite the budget stop");
+});
+
+test("parentSignal abort cancels the run with reason parent_aborted", async () => {
+  const graph: GraphSpec = {
+    version: 1,
+    id: "parent-abort",
+    name: "parent abort",
+    nodes: [{ kind: "agent", id: "a", prompt: "a" }],
+    edges: [],
+  };
+  const parentController = new AbortController();
+  const executor = new FakeExecutor({ pending: new Set(["a"]) });
+  const handle = startGraphRun(graph, {
+    executor,
+    parentContext: parent,
+    parentSignal: parentController.signal,
+  });
+  await waitUntilNodeState(handle, "a", "running");
+  parentController.abort();
+  const snapshot = await handle.done;
+  assert.equal(snapshot.state, "cancelled");
+  assert.equal(snapshot.cancellation?.reason, "parent_aborted");
+  assert.equal(handleNodeState(handle, "a"), "cancelled");
+});
+
+test("pre-aborted parentSignal cancels the run before execution", async () => {
+  const graph: GraphSpec = {
+    version: 1,
+    id: "parent-preabort",
+    name: "parent preabort",
+    nodes: [{ kind: "agent", id: "a", prompt: "a" }],
+    edges: [],
+  };
+  const parentController = new AbortController();
+  parentController.abort();
+  const executor = new FakeExecutor();
+  const handle = startGraphRun(graph, {
+    executor,
+    parentContext: parent,
+    parentSignal: parentController.signal,
+  });
+  const snapshot = await handle.done;
+  assert.equal(snapshot.state, "cancelled");
+  assert.equal(snapshot.cancellation?.reason, "parent_aborted");
+  assert.equal(executor.calls, 0, "no node ran");
+});
+
+test("parentSignal abort after completion is a no-op (listener removed)", async () => {
+  const graph: GraphSpec = {
+    version: 1,
+    id: "parent-late",
+    name: "parent late",
+    nodes: [{ kind: "agent", id: "a", prompt: "a" }],
+    edges: [],
+  };
+  const parentController = new AbortController();
+  const executor = new FakeExecutor({ outcomes: { a: { finalText: "done" } } });
+  const handle = startGraphRun(graph, {
+    executor,
+    parentContext: parent,
+    parentSignal: parentController.signal,
+  });
+  const snapshot = await handle.done;
+  assert.equal(snapshot.state, "succeeded");
+  const before = JSON.stringify(snapshot);
+  parentController.abort();
+  assert.equal(JSON.stringify(handle.snapshot()), before, "a late parent abort mutates nothing");
+  assert.equal(handle.cancel().accepted, false);
+});
+
+test("consumer with a route-skipped declared artifact producer is skipped route_not_selected", async () => {
+  const graph: GraphSpec = {
+    version: 1,
+    id: "route-blocked-ref",
+    name: "route blocked ref",
+    nodes: [
+      { kind: "agent", id: "source", prompt: "source" },
+      { kind: "agent", id: "branch-pass", prompt: "branch pass" },
+      {
+        kind: "agent",
+        id: "consumer",
+        prompt: "consume",
+        inputArtifacts: [{ nodeId: "branch-pass", output: "finalText" }],
+      },
+    ],
+    edges: [
+      {
+        id: "source-pass",
+        from: "source",
+        to: "branch-pass",
+        route: {
+          kind: "predicate",
+          predicate: { type: "finalText", regex: { source: "finalText", pattern: "pass" } },
+        },
+      },
+      { id: "branch-to-consumer", from: "branch-pass", to: "consumer" },
+      { id: "source-otherwise", from: "source", to: "consumer", route: { kind: "otherwise" } },
+    ],
+  };
+  const executor = new FakeExecutor({ outcomes: { source: { finalText: "reviewer has serious reservations" } } });
+  const snapshot = await runGraph(graph, { executor, parentContext: parent });
+  assert.equal(snapshot.state, "succeeded");
+  assert.equal(nodeState(snapshot, "branch-pass"), "skipped");
+  assert.equal(skipReason(snapshot, "branch-pass"), "route_not_selected");
+  assert.equal(nodeState(snapshot, "consumer"), "skipped");
+  assert.equal(
+    skipReason(snapshot, "consumer"),
+    "route_not_selected",
+    "an active edge cannot substitute a route-skipped declared producer",
+  );
 });
