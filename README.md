@@ -129,6 +129,88 @@ const finding = await agent('Find security-sensitive files.', {
 
 Under the hood this is a Pi `structured_output` tool with `terminate: true`, so the subagent ends on that call without an extra assistant turn.
 
+## Graph workflows (`workflow_graph`)
+
+The extension also registers a `workflow_graph` tool. Where `workflow` scripts are imperative
+plain JS that runs to completion, `workflow_graph` scripts are **declarative**: they declare
+agent nodes and regex-routed edges that compile into a graph and run in a background runtime.
+Start returns a `runId` immediately; `status`, `wait`, and `cancel` manage the run.
+
+The canonical example — code, review, then fix-or-ship — is one conditional plus a convergence
+point:
+
+```js
+export const meta = { name: 'fix_or_ship', description: 'Coder → review → fix then ship, or ship directly.' }
+
+const coder  = agent('You are a coder agent. Read the coder skill and implement the change.', { role: 'implementation' })
+const review = agent('Review the change. Respond with exactly <verdict>change</verdict> or <verdict>pass</verdict>.', { role: 'reviewer' })
+const fixer  = agent('Apply the requested changes.', { role: 'implementation' })
+const done   = agent('Finalize and report.', { role: 'verifier' })
+
+coder.to(review)
+review.when('<verdict>change</verdict>', fixer).otherwise(done)
+fixer.to(done)
+```
+
+`done` has two distinct sources (`review` via otherwise, `fixer` via always), so the compiler
+auto-inserts a deterministic `join` node (`done_join`) and rewrites both inbound edges onto it.
+On the **change path** the predicate matches, `fixer` runs on `review.finalText`, and `done`
+receives `{ fixer: "<fixer finalText>" }`. On the **pass path** the predicate misses, `fixer` is
+skipped (`route_not_selected`), the otherwise edge fires, and `done` receives `{ review: "<review
+finalText>" }`.
+
+Fan-out is just multiple `.to()` edges: targets become ready together and run concurrently,
+bounded by `budget({ maxConcurrency })` (default 4):
+
+```js
+export const meta = { name: 'audit', description: 'Scan, then three analyses, then synthesize.' }
+
+const scan   = agent('Inventory the repo.')
+const facts  = agent('Collect facts about structure.')
+const risks  = agent('Collect risks about security.')
+const dups   = agent('Find duplicated responsibility.')
+const report = agent('Synthesize the three analyses.')
+
+scan.to(facts)
+scan.to(risks)
+scan.to(dups)
+facts.to(report)
+risks.to(report)
+dups.to(report)
+
+budget({ maxConcurrency: 3 })
+```
+
+The `start` operation takes exactly one of three mutually-exclusive inputs:
+
+| Input | Form |
+| --- | --- |
+| `script` | A declarative script as above — the leading surface. |
+| `definition` | JSON `nodes`/`routes` for programmatic builders that prefer data over JS. |
+| `graph` | A raw `GraphSpec`, validated for full-contract control. |
+
+Declarative vs imperative at a glance:
+
+| | `workflow_graph` (declarative) | `workflow` (imperative) |
+| --- | --- | --- |
+| Script shape | Declares nodes and routed edges; no control flow | Plain JS: `await`, loops, `parallel(...)`, `return` |
+| Execution | Compiled to a graph, run in the background by the graph runtime | Sandbox runs to completion; the result returns to the calling turn |
+| Routing | Regex predicates over a source's final text | Explicit program logic |
+
+The v1 grammar, error taxonomy, and both fixtures are frozen in
+[`docs/adr/0002-graph-script-dsl.md`](docs/adr/0002-graph-script-dsl.md); the design walkthrough
+lives in [`docs/graph-js.md`](docs/graph-js.md). For the imperative tool, see
+[Workflow script shape](#workflow-script-shape) above. Graph scripts are never evaluated — the
+compiler interprets a restricted AST, so there are no ambient built-ins (`JSON`, `Math`,
+`Promise`), and every argument must be a static literal; violations surface as `script_*` errors
+with a source location.
+
+Editor IntelliSense for graph scripts:
+
+```js
+/// <reference types="pi-dynamic-workflows/workflow-graph" />
+```
+
 ## How it works
 
 ```text

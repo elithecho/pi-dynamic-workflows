@@ -12,6 +12,9 @@
     },
     "./workflow": {
       "types": "./types/workflow.d.ts"
+    },
+    "./workflow-graph": {
+      "types": "./types/workflow-graph.d.ts"
     }
   },
   "files": [
