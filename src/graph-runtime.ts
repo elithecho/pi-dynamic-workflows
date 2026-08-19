@@ -45,21 +45,17 @@
  */
 
 import {
-  createArtifact,
-  createDeterministicArtifact,
-  GraphContractError,
-  resolveExecutionContext,
-  selectGraphRoutes,
-  validateGraphPreflight,
-  validateGraphSpec,
   type AgentNode,
   type Artifact,
   type ArtifactOutputKind,
   type ArtifactRef,
   type Cancellation,
   type CancellationReason,
+  createArtifact,
+  createDeterministicArtifact,
   type DeterministicNode,
   type GraphCancelResult,
+  GraphContractError,
   type GraphEdge,
   type GraphError,
   type GraphLifecycleEvent,
@@ -74,8 +70,12 @@ import {
   type NodeState,
   type ResolvedExecutionContext,
   type RunState,
+  resolveExecutionContext,
   type SkipReason,
+  selectGraphRoutes,
   type Usage,
+  validateGraphPreflight,
+  validateGraphSpec,
 } from "./graph.js";
 
 /** Default concurrency admission limit when `budgets.maxConcurrency` is omitted. */
@@ -266,7 +266,12 @@ class GraphRunEngine implements GraphRunHandle {
     this.options = options;
     this.executor = options.executor;
     this.parentContext = options.parentContext;
-    this.runId = options.runId ?? `run-${(runCounter += 1)}`;
+    if (options.runId !== undefined) {
+      this.runId = options.runId;
+    } else {
+      runCounter += 1;
+      this.runId = `run-${runCounter}`;
+    }
     this.graphId = graph.id;
     this.maxConcurrency = graph.budgets?.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
     this.runtimes = graph.nodes.map((node) => ({ node, state: "pending" as NodeState, attempt: 0, artifactIds: [] }));
@@ -568,7 +573,10 @@ class GraphRunEngine implements GraphRunHandle {
       outcome = await Promise.race([
         this.executor.execute(request).then(
           (result) => normalizeExecutorResult(result, request.node.id),
-          (error: unknown) => faultError(error, request.node.id, "node executor threw"),
+          (error: unknown) => ({
+            ok: false as const,
+            error: faultError(error, request.node.id, "node executor threw"),
+          }),
         ),
         this.abortSignalRace(),
       ]);
@@ -602,7 +610,7 @@ class GraphRunEngine implements GraphRunHandle {
     output: AgentNodeOutput,
     usage: Usage | undefined,
   ): void {
-    let artifact;
+    let artifact: Artifact;
     try {
       artifact = createArtifact({
         id: this.nextArtifactId(node.id, "output"),
@@ -683,9 +691,7 @@ class GraphRunEngine implements GraphRunHandle {
     runtime.artifactIds.push(artifact.id);
     this.selectedEdges.set(
       runtime.node.id,
-      new Set(
-        selectGraphRoutes(this.outgoing.get(runtime.node.id) ?? [], artifact).map((edge) => edge.id),
-      ),
+      new Set(selectGraphRoutes(this.outgoing.get(runtime.node.id) ?? [], artifact).map((edge) => edge.id)),
     );
     this.addUsage(artifact.usage);
     this.transition(runtime, "succeeded");
@@ -802,10 +808,7 @@ class GraphRunEngine implements GraphRunHandle {
   }
 }
 
-function groupEdges(
-  graph: GraphSpec,
-  keyOf: (edge: GraphEdge) => string,
-): ReadonlyMap<string, readonly GraphEdge[]> {
+function groupEdges(graph: GraphSpec, keyOf: (edge: GraphEdge) => string): ReadonlyMap<string, readonly GraphEdge[]> {
   const groups = new Map<string, GraphEdge[]>();
   for (const edge of graph.edges) {
     const key = keyOf(edge);
