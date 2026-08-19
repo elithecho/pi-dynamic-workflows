@@ -162,7 +162,10 @@ npm test     # biome check + tsc + unit tests
 npm run dev
 ```
 
-Parser unit tests live in `tests/workflow-parser.test.ts` and cover both accepted and rejected script shapes.
+The graph contract targets the Pi SDK `0.78.x` API surface (the development dependencies
+are pinned to `0.78.0`); graph execution must obtain the invoking parent's actual model and
+thinking level through its explicit extension adapter. Parser unit tests live in
+`tests/workflow-parser.test.ts` and cover both accepted and rejected script shapes.
 
 ## Status
 

@@ -16,6 +16,27 @@ export {
   renderWorkflowLines,
   renderWorkflowText,
 } from "./display.js";
+export type * from "./graph.js";
+export {
+  createArtifact,
+  createDeterministicArtifact,
+  DEFAULT_FINAL_TEXT_PATTERN,
+  GRAPH_CONTRACT_VERSION,
+  GraphContractError,
+  getInvokingParentContext,
+  isJoinSatisfied,
+  MAX_FINAL_TEXT_INPUT_LENGTH,
+  MAX_REGEX_PATTERN_LENGTH,
+  matchesFinalText,
+  matchesJsonPredicate,
+  resolveExecutionContext,
+  SAFE_REGEX_SUBSET_DESCRIPTION,
+  SUPPORTED_REGEX_FLAGS,
+  selectGraphRoute,
+  selectGraphRoutes,
+  validateGraphPreflight,
+  validateGraphSpec,
+} from "./graph.js";
 export type { StructuredOutputCapture, StructuredOutputToolOptions } from "./structured-output.js";
 export { createStructuredOutputTool } from "./structured-output.js";
 export type {
