@@ -9,6 +9,7 @@ import {
   type GraphSpec,
   getInvokingParentContext,
   isJoinSatisfied,
+  MAX_FINAL_TEXT_INPUT_LENGTH,
   MAX_REGEX_PATTERN_LENGTH,
   matchesFinalText,
   matchesJsonPredicate,

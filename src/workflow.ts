@@ -117,6 +117,9 @@ export async function runWorkflow<T = unknown>(
           signal: options.signal,
           instructions: buildAgentInstructions(assignedPhase, normalizedOptions),
         } as any);
+        if (normalizedOptions.schema === undefined && typeof result === "string" && !result.trim()) {
+          throw new Error("Subagent finished with no usable final response");
+        }
         throwIfAborted();
         state.spent += estimateTokens(result);
         options.onAgentEnd?.({ label, phase: assignedPhase, result });

@@ -129,14 +129,8 @@ function recordedInputs(executor: ScenarioExecutor, nodeId: string): RecordedCal
   return call.inputs;
 }
 
-interface ToolCtxRecordings {
-  readonly sendMessageCalls: number;
-  readonly sendUserMessageCalls: number;
-}
-
-/** Hermetic tool context; sendMessage/sendUserMessage are counted, never used. */
-function fakeToolCtx(): ExtensionContext & { readonly __recordings: ToolCtxRecordings } {
-  const recordings: ToolCtxRecordings = { sendMessageCalls: 0, sendUserMessageCalls: 0 };
+/** Hermetic tool context for testing the tool's own terminal callback seam. */
+function fakeToolCtx(): ExtensionContext {
   const context = {
     cwd: process.cwd(),
     model: { provider: "test", id: "parent" },
@@ -152,16 +146,10 @@ function fakeToolCtx(): ExtensionContext & { readonly __recordings: ToolCtxRecor
     },
     hasUI: true,
     signal: undefined,
-    sendMessage() {
-      recordings.sendMessageCalls += 1;
-    },
-    sendUserMessage() {
-      recordings.sendUserMessageCalls += 1;
-    },
+    sendMessage() {},
+    sendUserMessage() {},
   };
-  return { ...context, __recordings: recordings } as unknown as ExtensionContext & {
-    readonly __recordings: ToolCtxRecordings;
-  };
+  return context as unknown as ExtensionContext;
 }
 
 test("scenario E1: change path routes review → fixer → done_join and done receives { fixer }", async () => {
@@ -230,7 +218,7 @@ test("scenario E3: audit fan-out runs facts/risks/dups concurrently and report j
   ]);
 });
 
-test("scenario E4: tool start returns a runId before completion and never relays through the main agent", async () => {
+test("scenario E4: tool start returns early and terminal callback excludes intermediate outputs", async () => {
   const executor = new DeferredExecutor({
     coder: "implemented",
     review: "<verdict>change</verdict>",
@@ -238,10 +226,14 @@ test("scenario E4: tool start returns a runId before completion and never relays
     done: "shipped",
   });
   executor.defer("review");
+  const completions: GraphRunSnapshot[] = [];
   const tool = createWorkflowGraphTool({
     executor,
     registry: new GraphRunRegistry(),
     getThinkingLevel: () => "medium",
+    onTerminalCompletion: (snapshot) => {
+      completions.push(snapshot);
+    },
   });
   const ctx = fakeToolCtx();
 
@@ -272,9 +264,9 @@ test("scenario E4: tool start returns a runId before completion and never relays
   assert.equal(waitDetails.result.completed, true);
   assert.equal(waitDetails.result.run.state, "succeeded");
 
-  const recordings = ctx.__recordings;
-  assert.equal(recordings.sendMessageCalls, 0, "start/wait must never relay via sendMessage");
-  assert.equal(recordings.sendUserMessageCalls, 0, "start/wait must never relay via sendUserMessage");
+  assert.equal(completions.length, 1);
+  assert.equal(completions[0]?.finalAnswer, "shipped");
+  assert.doesNotMatch(completions[0]?.finalAnswer ?? "", /implemented|applied/);
 });
 
 test("scenario E5: start inputs are mutually exclusive and script errors surface their code", () => {

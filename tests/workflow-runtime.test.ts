@@ -1,12 +1,57 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { TSchema } from "typebox";
+import type { AgentRunOptions, AgentRunResult } from "../src/agent.js";
 import { runWorkflow } from "../src/workflow.js";
 
 const fakeAgent = {
-  async run(prompt: string): Promise<string> {
-    return `result:${prompt}`;
+  async run<TSchemaDef extends TSchema | undefined = undefined>(
+    prompt: string,
+    _options?: AgentRunOptions<TSchemaDef>,
+  ): Promise<AgentRunResult<TSchemaDef>> {
+    return `result:${prompt}` as AgentRunResult<TSchemaDef>;
   },
 };
+
+test("runWorkflow marks blank unstructured agent output as a failed null branch", async () => {
+  const ended: unknown[] = [];
+  const result = await runWorkflow(
+    `export const meta = { name: 'blank_agent', description: 'Reject blank output' }
+const answer = await agent('answer', { label: 'answer' })
+return { answer }`,
+    {
+      agent: {
+        async run() {
+          return "   ";
+        },
+      } as any,
+      onAgentEnd(event) {
+        ended.push(event.result);
+      },
+    },
+  );
+
+  assert.equal((result.result as { answer: null }).answer, null);
+  assert.deepEqual(ended, [null]);
+  assert.match(result.logs[0] ?? "", /no usable final response/);
+});
+
+test("runWorkflow preserves blank structured output values", async () => {
+  const result = await runWorkflow(
+    `export const meta = { name: 'blank_structured', description: 'Preserve structured output' }
+const answer = await agent('answer', { label: 'answer', schema: { type: 'string' } })
+return { answer }`,
+    {
+      agent: {
+        async run() {
+          return "   ";
+        },
+      } as any,
+    },
+  );
+
+  assert.equal((result.result as { answer: string }).answer, "   ");
+});
 
 test("runWorkflow accepts metadata without phases and records runtime phases", async () => {
   const result = await runWorkflow(

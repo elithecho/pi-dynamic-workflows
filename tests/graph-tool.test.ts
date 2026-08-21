@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { GraphRunSnapshot, GraphSpec } from "../src/graph.js";
+import { formatGraphFinalAnswer, type GraphRunSnapshot, type GraphSpec } from "../src/graph.js";
 import { GraphRunRegistry } from "../src/graph-registry.js";
 import type { NodeExecutionRequest, NodeExecutor, NodeExecutorResult } from "../src/graph-runtime.js";
 import { createWorkflowGraphTool } from "../src/graph-tool.js";
@@ -11,8 +11,6 @@ interface FakeUiRecordings {
   readonly setWidgetCalls: Array<{ readonly key: string; readonly content: string[] | undefined }>;
   readonly setStatusCalls: Array<{ readonly key: string; readonly text: string | undefined }>;
   readonly notifyCalls: Array<{ readonly message: string; readonly type: string }>;
-  sendMessageCalls: number;
-  sendUserMessageCalls: number;
 }
 
 /**
@@ -25,8 +23,6 @@ function fakeCtx(model?: unknown, noModel = false): ExtensionContext & { readonl
     setWidgetCalls: [],
     setStatusCalls: [],
     notifyCalls: [],
-    sendMessageCalls: 0,
-    sendUserMessageCalls: 0,
   };
   const context = {
     cwd: process.cwd(),
@@ -49,14 +45,8 @@ function fakeCtx(model?: unknown, noModel = false): ExtensionContext & { readonl
     },
     hasUI: true,
     signal: undefined,
-    sendMessage() {
-      recordings.sendMessageCalls += 1;
-      throw new Error("workflow_graph must never relay through sendMessage");
-    },
-    sendUserMessage() {
-      recordings.sendUserMessageCalls += 1;
-      throw new Error("workflow_graph must never relay through sendUserMessage");
-    },
+    sendMessage() {},
+    sendUserMessage() {},
   };
   return { ...context, __recordings: recordings } as unknown as ExtensionContext & {
     readonly __recordings: FakeUiRecordings;
@@ -362,6 +352,8 @@ test("cancel aborts an active node and rejects a second cancel", async () => {
   const status = await tool.execute("call-3", { operation: "status", runId }, undefined, undefined, ctx);
   const run = (status.details as { result: { run: GraphRunSnapshot } }).result.run;
   assert.equal(run.state, "cancelled");
+  const statusText = status.content[0]?.type === "text" ? status.content[0].text : "";
+  assert.match(statusText, /cancellation reason=requested/);
   assert.equal(run.nodes.find((node) => node.id === "a")?.state, "cancelled");
 
   const second = await tool.execute("call-4", { operation: "cancel", runId }, undefined, undefined, ctx);
@@ -505,10 +497,60 @@ test("definition compiles into a graph at start", async () => {
   );
 });
 
-test("the tool never relays node output through the main agent", async () => {
-  const executor = new RecordingExecutor({ finalText: { a: "SECRET-A", b: "SECRET-B", c: "SECRET-C" } });
+test("formatGraphFinalAnswer honors zero, one, and marker-length bounds", () => {
+  const value = "0123456789abcdef";
+  assert.equal(formatGraphFinalAnswer(value, 0), "");
+  assert.equal(formatGraphFinalAnswer(value, 1), "…");
+  assert.equal(formatGraphFinalAnswer(value, 13), "… [truncated]");
+  assert.equal(formatGraphFinalAnswer(value, 14), "0… [truncated]");
+  assert.ok(formatGraphFinalAnswer(value, 14).length <= 14);
+});
+
+test("status, wait, and terminal presentation bound large graph final answers", async () => {
+  const large = "x".repeat(6_000);
+  const executor = new RecordingExecutor({ finalText: { a: large, b: large } });
   const registry = new GraphRunRegistry();
   const tool = createWorkflowGraphTool({ executor, registry, getThinkingLevel: () => "medium" });
+  const graph: GraphSpec = {
+    version: 1,
+    id: "large_answers",
+    name: "large answers",
+    nodes: [
+      { kind: "agent", id: "a", prompt: "a" },
+      { kind: "agent", id: "b", prompt: "b" },
+    ],
+    edges: [],
+  };
+  const started = await tool.execute("large-start", { operation: "start", graph }, undefined, undefined, fakeCtx());
+  const runId = (started.details as { result: { runId: string } }).result.runId;
+  const waited = await tool.execute("large-wait", { operation: "wait", runId }, undefined, undefined, fakeCtx());
+  const waitRun = (waited.details as { result: { run: GraphRunSnapshot } }).result.run;
+  const finalAnswer = waitRun.finalAnswer;
+  assert.ok(finalAnswer);
+  assert.ok(finalAnswer.length > 10_000);
+  const waitText = waited.content[0]?.type === "text" ? waited.content[0].text : "";
+  assert.match(waitText, /… \[truncated\]/);
+  assert.ok(waitText.length < 5_000);
+
+  const status = await tool.execute("large-status", { operation: "status", runId }, undefined, undefined, fakeCtx());
+  const statusText = status.content[0]?.type === "text" ? status.content[0].text : "";
+  assert.match(statusText, /Final answer:/);
+  assert.match(statusText, /… \[truncated\]/);
+  assert.ok(statusText.length < 5_000);
+});
+
+test("wait exposes only the canonical terminal answer and invokes completion once", async () => {
+  const executor = new RecordingExecutor({ finalText: { a: "SECRET-A", b: "SECRET-B", c: "SECRET-C" } });
+  const registry = new GraphRunRegistry();
+  const completions: GraphRunSnapshot[] = [];
+  const tool = createWorkflowGraphTool({
+    executor,
+    registry,
+    getThinkingLevel: () => "medium",
+    onTerminalCompletion: (snapshot) => {
+      completions.push(snapshot);
+    },
+  });
   const ctx = fakeCtx();
 
   const started = await tool.execute(
@@ -531,15 +573,82 @@ test("the tool never relays node output through the main agent", async () => {
   assert.equal(run.artifacts.length, 3);
   assert.ok(run.artifacts.every((artifact) => "finalText" in artifact));
   const waitText = waited.content[0].type === "text" ? waited.content[0].text : "";
-  assert.match(waitText, /^workflow_graph run run-\d+: succeeded$/);
-  assert.doesNotMatch(waitText, /SECRET/);
+  assert.match(waitText, /^workflow_graph run run-\d+: succeeded\nFinal answer:\nSECRET-C$/);
+  assert.match(waitText, /SECRET-C/);
+  assert.doesNotMatch(waitText, /SECRET-A|SECRET-B/);
+  assert.equal(run.finalAnswer, "SECRET-C");
+  assert.equal(completions.length, 1);
+  assert.equal(completions[0]?.finalAnswer, "SECRET-C");
 
   const recordings = ctx.__recordings;
   assert.equal(recordings.notifyCalls.length, 1);
   assert.equal(recordings.notifyCalls[0]?.type, "info");
   assert.ok(recordings.setWidgetCalls.length >= 1);
-  assert.equal(recordings.sendMessageCalls, 0);
-  assert.equal(recordings.sendUserMessageCalls, 0);
+});
+
+test("a completion callback failure does not break a successful run", async () => {
+  const registry = new GraphRunRegistry();
+  const tool = createWorkflowGraphTool({
+    executor: new RecordingExecutor({ finalText: { a: "answer" } }),
+    registry,
+    getThinkingLevel: () => "medium",
+    onTerminalCompletion: () => {
+      throw new Error("relay failed");
+    },
+  });
+  const started = await tool.execute(
+    "call-1",
+    { operation: "start", graph: makeChainGraph() },
+    undefined,
+    undefined,
+    fakeCtx(),
+  );
+  const runId = (started.details as { result: { runId: string } }).result.runId;
+  const waited = await tool.execute("call-2", { operation: "wait", runId }, undefined, undefined, fakeCtx());
+  assert.equal((waited.details as { result: { run: GraphRunSnapshot } }).result.run.state, "succeeded");
+});
+
+test("wait and status expose actionable failure metadata", async () => {
+  const registry = new GraphRunRegistry();
+  const tool = createWorkflowGraphTool({
+    executor: {
+      async execute(request): Promise<NodeExecutorResult> {
+        return {
+          ok: false,
+          error: { code: "model_unavailable", nodeId: request.node.id, message: "provider unavailable" },
+        };
+      },
+    },
+    registry,
+    getThinkingLevel: () => "medium",
+  });
+  const started = await tool.execute(
+    "call-1",
+    {
+      operation: "start",
+      graph: {
+        version: 1,
+        id: "failure-metadata",
+        name: "failure metadata",
+        nodes: [{ kind: "agent", id: "broken", prompt: "broken" }],
+        edges: [],
+      },
+    },
+    undefined,
+    undefined,
+    fakeCtx(),
+  );
+  const runId = (started.details as { result: { runId: string } }).result.runId;
+  const waited = await tool.execute("call-2", { operation: "wait", runId }, undefined, undefined, fakeCtx());
+  const waitText = waited.content[0]?.type === "text" ? waited.content[0].text : "";
+  assert.match(waitText, /model_unavailable/);
+  assert.match(waitText, /node=broken/);
+  assert.match(waitText, /provider unavailable/);
+
+  const status = await tool.execute("call-3", { operation: "status", runId }, undefined, undefined, fakeCtx());
+  const statusText = status.content[0]?.type === "text" ? status.content[0].text : "";
+  assert.match(statusText, /model_unavailable/);
+  assert.match(statusText, /provider unavailable/);
 });
 
 test("concurrency obeys the graph budget", async () => {

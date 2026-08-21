@@ -1,9 +1,11 @@
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import type { WorkflowAgent } from "./agent.js";
 import {
   createToolUpdateWorkflowDisplay,
   createWorkflowSnapshot,
+  formatWorkflowResult,
   preview,
   recomputeWorkflowSnapshot,
   renderWorkflowText,
@@ -41,6 +43,8 @@ const workflowDisplayOptions = {
 export interface WorkflowToolOptions {
   cwd?: string;
   concurrency?: number;
+  /** Injectable legacy agent runner for hermetic tool-boundary tests. */
+  agent?: Pick<WorkflowAgent, "run">;
 }
 
 export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefinition<typeof workflowToolSchema, any> {
@@ -64,7 +68,8 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       "For workflow, parallel() takes functions, not promises: use `await parallel(items.map(item => () => agent('...', { label: '...' })))`, never `await parallel(items.map(item => agent(...)))`. Results are returned in input order.",
       "For workflow, pipeline(items, ...stages) runs each item through stages sequentially, while different items may run concurrently. Each stage receives (previousValue, originalItem, index).",
       "For workflow, every agent() call should include a unique short label option, 2-5 words, such as { label: 'repo inventory' } or { label: 'source modules' }; unique labels make live status and error reporting readable.",
-      "For workflow, failed agent(), parallel(), or pipeline() branches return null and log the failure unless the workflow is aborted. Check for nulls before synthesizing conclusions.",
+      "For workflow, failed or empty agent() responses, and failed parallel()/pipeline() branches, return null and log the failure unless the workflow is aborted; the slot is marked as an error, not done. Check for nulls before synthesizing conclusions.",
+      "For workflow, completion renders the bounded script result directly in the tool output; do not rely on a subsequent parent-model fetch to see the final result.",
       "For workflow, include a final synthesis/assertion agent when combining multiple subagent results; return a compact JSON-serializable value with ok/verdict plus the important outputs.",
       "For workflow, if agent() needs machine-readable output, pass a plain JSON Schema via opts.schema; agent() will return the validated object. Use JSON Schema syntax, not TypeScript or TypeBox constructors.",
       "For workflow, do not assume the parent assistant has repository code context inside subagents; include enough task context and relevant paths in each agent prompt.",
@@ -96,6 +101,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
           args: params.args,
           signal,
           concurrency: options.concurrency,
+          agent: options.agent,
           session: {
             modelRegistry: ctx.modelRegistry,
             model: ctx.model,
@@ -162,7 +168,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
         content: [
           {
             type: "text",
-            text: `Workflow ${result.meta.name} completed with ${result.agentCount} agent(s).\n\nResult:\n${JSON.stringify(result.result, null, 2)}`,
+            text: `Workflow ${result.meta.name} completed with ${result.agentCount} agent(s).\n\nFinal result:\n${formatWorkflowResult(result.result)}`,
           },
         ],
         details: {

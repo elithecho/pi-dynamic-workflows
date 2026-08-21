@@ -209,11 +209,11 @@ New:
 | --- | --- |
 | `src/graph-script.ts` | `compileGraphScript(script): GraphSpec` — meta parse, static-argument guard, binding table, allowlist AST pass, `GraphDefinition` assembly, then `compileGraphDefinition`. Exports `GraphScriptError`. |
 | `tests/graph-script.test.ts` | Parser/compiler unit tests (grammar matrix, guard-bypass matrix, idempotence, canonical fixture). |
-| `tests/graph-script-scenario.test.ts` | End-to-end: script → `runGraph` with fake executor (pass/change routing, fan-out concurrency, join, relay-absence). |
+| `tests/graph-script-scenario.test.ts` | End-to-end: script → `runGraph` with fake executor (pass/change routing, fan-out concurrency, join, terminal-only completion relay). |
 | `types/workflow-graph.d.ts` | Editor IntelliSense for `agent`/`to`/`when`/`otherwise`/`budget`. |
 | `docs/adr/0002-graph-script-dsl.md` | ADR recording the v1 grammar, collector-vs-return, static-argument, error-taxonomy, and generated-id decisions. |
 
-Edited (frozen/legacy files stay untouched):
+Edited (graph runtime files remain scoped to this graph feature):
 
 | File | Change |
 | --- | --- |
@@ -225,13 +225,14 @@ Edited (frozen/legacy files stay untouched):
 | `package.json` | Add `"./workflow-graph"` types subpath export. |
 | `README.md` | Document the new surface; contrast declarative `workflow_graph` vs imperative `workflow`. |
 
-Untouchable: `src/workflow.ts`, `src/workflow-tool.ts`, `src/agent.ts`, `src/display.ts`,
-`src/structured-output.ts`, `src/graph.ts`, `src/graph-runtime.ts`, `src/graph-agent.ts`,
-`src/graph-registry.ts`, `src/graph-display.ts`, `src/staged-workflow.ts`.
+Out of scope for the graph feature: `src/workflow.ts`, `src/workflow-tool.ts`, `src/agent.ts`,
+`src/display.ts`, `src/structured-output.ts`, `src/graph.ts`, `src/graph-runtime.ts`,
+`src/graph-agent.ts`, `src/graph-registry.ts`, `src/graph-display.ts`, `src/staged-workflow.ts`.
+These files are not immutable; later targeted repairs may update the legacy workflow surfaces.
 
 > Note: the earlier "shared `src/script-ast.ts` extraction from `workflow.ts`" idea is dropped.
-> `graph-script.ts` owns a small self-contained literal evaluator; `workflow.ts` stays untouched
-> and off the critical path.
+> `graph-script.ts` owns a small self-contained literal evaluator; the imperative workflow runtime
+> remains off the graph critical path.
 
 ## Tool surface
 
@@ -239,7 +240,7 @@ Untouchable: `src/workflow.ts`, `src/workflow-tool.ts`, `src/agent.ts`, `src/dis
 
 ```text
 workflow_graph { operation: "start", script: "<js above>" }
-  → runId immediately; status/wait/cancel by runId; completion via UI widget, not a relay turn
+  → runId immediately; status/wait/cancel by runId; terminal completion wakes the parent with the final answer
 ```
 
 Tool guidance leads with `script`, keeps `definition` (JSON) and `graph` (raw GraphSpec) as
@@ -258,7 +259,7 @@ escape hatches, and explicitly contrasts with the legacy imperative `workflow` t
 
 Design gaps resolved: `meta.description` documented as tool-facing metadata; `meta.id` supported;
 `GraphScriptError` carries `loc` + `cause`; `log()` dropped from v1; unknown-key/duplicate policy
-is explicit rejection; `workflow.ts` untouched (no extraction); canonical fixture is the single
+is explicit rejection; no shared extraction from the imperative workflow runtime; canonical fixture is the single
 shared acceptance example; regression gate reworded to named frozen artifacts + idempotence.
 
 ---
@@ -274,7 +275,7 @@ shared acceptance example; regression gate reworded to named frozen artifacts + 
   teaches the DSL.
 - The canonical `coder→review→(fix|done)` and fan-out+join fixtures proven end-to-end through the
   frozen runtime.
-- Frozen `graph.ts`/`graph-runtime.ts`/`graph-agent.ts` untouched; legacy `workflow` untouched.
+- Frozen graph runtime contracts remain compatible; legacy workflow behavior is covered separately by its own regression tests.
 
 ## Deferred surfaces (non-blocking)
 
@@ -341,7 +342,7 @@ shared acceptance example; regression gate reworded to named frozen artifacts + 
   - Must not touch: `graph-script.ts`, `graph-definition.ts`, `graph.ts`, `graph-runtime.ts`, `graph-agent.ts`.
   - Deliverable: `script` param; three-way mutual exclusion; guidance teaches the DSL; flip the
     existing rejection test; export `compileGraphScript` + `GraphScriptError` from `src/index.ts`.
-  - Verification: tool test (`script` start → runId, status/wait shared, relay absence, disambiguation);
+  - Verification: tool test (`script` start → runId, status/wait shared, terminal-only completion, disambiguation);
     tsc + biome.
 
 - [ ] **Scenario-E: End-to-end graph script scenarios**
@@ -349,7 +350,7 @@ shared acceptance example; regression gate reworded to named frozen artifacts + 
   - Depends on: Impl-B (runtime path) + Tool-D (tool-script path).
   - Must not touch: `src/**`.
   - Deliverable: canonical pass/change routing; fan-out concurrency ≤ `maxConcurrency`; `report_join`
-    joins three; relay absence via the tool.
+    joins three; terminal completion excludes intermediate artifacts.
   - Verification: tests pass.
 
 - [ ] **Review-1: Integration review gate**
@@ -380,7 +381,7 @@ after Contract-1.
 3. Tool-D is serialized after Impl-B (imports the real module) and owns the high-conflict
    `graph-tool.ts` + `src/index.ts`.
 4. Scenario-E after Tool-D (covers both runtime and tool paths).
-5. No lane touches a frozen or legacy file; each file has exactly one owner:
+5. No graph implementation lane expands into unrelated legacy surfaces; each graph file has exactly one owner:
    `graph-definition.ts`=A, `graph-script.ts`=B, `types/`+`package.json`+`README`=Docs-C,
    `graph-tool.ts`+`index.ts`=Tool-D, `graph-script-scenario.test.ts`=Scenario-E.
 
@@ -421,17 +422,17 @@ Contract lock (grammar + canonical fixtures + id contract)
 - [ ] Static-argument guard rejects the full bypass matrix; allowlist AST rejects await/return/loops/functions/assignments/updates/imports.
 - [ ] `GraphScriptError` carries `code`+`loc`+`cause`; graph-shape errors wrap as `cause`.
 - [ ] Generated ids bounded/collision-safe incl. 64-char and reserved-name boundary cases.
-- [ ] Legacy `workflow` behavior unchanged; frozen files untouched.
-- [ ] Tool `script` path: start returns `runId` before completion; no `sendMessage`/`sendUserMessage`; status/wait observe the same run.
+- [ ] Legacy `workflow` behavior remains covered by regression tests; graph runtime contracts stay compatible.
+- [ ] Tool `script` path: start returns `runId` before completion; one terminal follow-up wakes the parent with the canonical final answer while intermediate artifacts remain unrelayed; status/wait observe the same run.
 - [ ] Idempotence: same script twice → byte-identical serialized GraphSpec.
 
 ## Final verification checklist (Verify-1)
 
 - [ ] `npm test` green (biome + tsc + all unit tests, legacy `workflow` tests unchanged).
-- [ ] `git diff --exit-code <frozen-commit> -- src/graph.ts tests/graph-contract.test.ts` (byte-identical); legacy files untouched.
+- [ ] `git diff --exit-code <frozen-commit> -- src/graph.ts tests/graph-contract.test.ts` (byte-identical where required); legacy repairs are reviewed separately.
 - [ ] Manual pass + change routing snapshot of the canonical fixture (fixer skipped vs ran; `done` join value correct).
 - [ ] Manual fan-out concurrency snapshot (`maxConcurrency` respected; `report_join` value correct).
-- [ ] Tool `script` path relay-absence (spies at zero) + start-before-completion.
+- [ ] Tool `script` path terminal-only completion (intermediate artifacts excluded) + start-before-completion.
 - [ ] Deferred non-blocking follow-ups listed.
 
 ## Handoff contract

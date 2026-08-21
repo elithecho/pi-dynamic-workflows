@@ -21,6 +21,10 @@ Use `workflow` when you need:
 
 If unsure, prefer `workflow_graph` — declarative and deterministic.
 
+For legacy `workflow`, completion renders the bounded script result directly in the tool output;
+do not rely on a subsequent parent-model fetch. Failed or empty unstructured subagent responses
+return `null` and are marked as agent errors.
+
 ## DSL quick reference
 
 `workflow_graph` `script` input — a restrictive declarative JS DSL, compiled (never evaluated):
@@ -98,9 +102,9 @@ waits for all three sources and `report` receives `{ facts, risks, dups }`.
 - `cancel` — stop with the `runId` (optional reason: `requested` | `parent_aborted` | `timeout` |
   `budget_exhausted`).
 
-Completion surfaces through the `workflow_graph` UI widget — the tool **never** relays a
-completion message into your turn (relay-absence). If you need the outcome, poll
-`status`/`wait` yourself.
+Completion surfaces through the `workflow_graph` UI widget and a single terminal follow-up that
+wakes the parent turn with the canonical final answer. Intermediate node artifacts remain direct
+graph inputs and are not relayed. Use `status`/`wait` when you need to inspect a run explicitly.
 
 ## Failure modes
 
@@ -110,8 +114,9 @@ completion message into your turn (relay-absence). If you need the outcome, poll
   otherwise-without-when, cycle, duplicate id, id-pattern violation) surface with the underlying
   code preserved (`invalid_regex` etc.), `cause` = the `GraphContractError`, `loc` when
   attributable.
-- Do not expect a `sendMessage` from the tool; if you do not poll, you will not hear about the
-  outcome.
+- Expect one terminal completion message that wakes the parent turn. It contains the canonical
+  final answer on success, or actionable failure/cancellation metadata; intermediate artifacts
+  are excluded.
 
 ## Reference
 

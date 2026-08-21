@@ -210,15 +210,99 @@ export interface GraphRunSnapshotBase {
 export type GraphRunSnapshot = GraphRunSnapshotBase &
   (
     | {
-        readonly state: "created" | "running" | "succeeded";
+        readonly state: "created" | "running";
+        readonly error?: never;
+        readonly cancellation?: Cancellation;
+        readonly finalAnswer?: never;
+      }
+    | {
+        readonly state: "succeeded";
+        /** Canonical answer from every successful topology sink. */
+        readonly finalAnswer: string;
         readonly error?: never;
         readonly cancellation?: Cancellation;
       }
-    | { readonly state: "failed"; readonly error: GraphError; readonly cancellation?: Cancellation }
-    | { readonly state: "cancelled"; readonly cancellation: Cancellation; readonly error?: never }
+    | {
+        readonly state: "failed";
+        readonly error: GraphError;
+        readonly cancellation?: Cancellation;
+        readonly finalAnswer?: never;
+      }
+    | {
+        readonly state: "cancelled";
+        readonly cancellation: Cancellation;
+        readonly error?: never;
+        readonly finalAnswer?: never;
+      }
   );
 /** Short alias used by lifecycle consumers. */
 export type RunSnapshot = GraphRunSnapshot;
+
+/** Stable JSON text for deterministic terminal artifact values. */
+function stableJsonText(value: JsonValue): string {
+  if (Array.isArray(value)) return `[${value.map(stableJsonText).join(",")}]`;
+  if (isRecord(value)) {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJsonText(value[key] as JsonValue)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+/**
+ * Select every successful topology sink in graph declaration order. Agent
+ * sinks contribute finalText; deterministic sinks contribute their artifact
+ * value. A single sink is returned verbatim, while multiple sinks are labelled
+ * so all answers survive without depending on artifact completion order.
+ */
+export function selectGraphFinalAnswer(
+  graph: GraphSpec,
+  nodes: readonly NodeSnapshot[],
+  artifacts: readonly Artifact[],
+): string {
+  const successfulNodes = new Set(nodes.filter((node) => node.state === "succeeded").map((node) => node.id));
+  const artifactsByNode = new Map(artifacts.map((artifact) => [artifact.nodeId, artifact]));
+  const outputs = graph.nodes
+    .filter((node) => !graph.edges.some((edge) => edge.from === node.id) && successfulNodes.has(node.id))
+    .flatMap((node) => {
+      const artifact = artifactsByNode.get(node.id);
+      if (artifact === undefined) return [];
+      const text =
+        node.kind === "agent" && "finalText" in artifact
+          ? artifact.finalText
+          : node.kind === "deterministic"
+            ? typeof artifact.value === "string"
+              ? artifact.value
+              : stableJsonText(artifact.value)
+            : undefined;
+      return text === undefined ? [] : [{ nodeId: node.id, text }];
+    });
+  if (outputs.length === 1) return outputs[0].text;
+  return outputs.map((output) => `### ${output.nodeId}\n${output.text}`).join("\n\n");
+}
+
+const MAX_GRAPH_FINAL_ANSWER_LENGTH = 4_000;
+
+/** Bound graph final-answer presentation without changing the canonical snapshot field. */
+export function formatGraphFinalAnswer(value: string, max = MAX_GRAPH_FINAL_ANSWER_LENGTH): string {
+  if (max <= 0) return "";
+  if (value.length <= max) return value;
+  const marker = "… [truncated]";
+  if (max <= marker.length) return marker.slice(0, max);
+  return `${value.slice(0, max - marker.length)}${marker}`;
+}
+
+/** Render actionable, bounded metadata for failed or cancelled terminal runs. */
+export function formatGraphTerminalDetails(snapshot: GraphRunSnapshot): string {
+  if (snapshot.state === "failed") {
+    const node = snapshot.error.nodeId === undefined ? "" : ` node=${snapshot.error.nodeId.slice(0, 64)}`;
+    const message = snapshot.error.message.slice(0, 256);
+    return ` error code=${snapshot.error.code}${node} message=${message}`;
+  }
+  if (snapshot.state === "cancelled") return ` cancellation reason=${snapshot.cancellation.reason ?? "requested"}`;
+  return "";
+}
 
 export interface InvokingParentExecutionContext {
   readonly model: ModelSelector;
@@ -594,7 +678,12 @@ function deepFreeze<T>(value: T): T {
 }
 
 function cloneJson(value: JsonValue): JsonValue {
-  if (Array.isArray(value)) return value.map(cloneJson);
+  if (Array.isArray(value)) {
+    return Array.from({ length: value.length }, (_, index) => {
+      const child = value[index] as JsonValue | undefined;
+      return child === undefined ? null : cloneJson(child);
+    });
+  }
   if (isRecord(value)) return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, cloneJson(child)]));
   return value;
 }

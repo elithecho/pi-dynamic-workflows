@@ -1,14 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { GraphRunSnapshot } from "../src/graph.js";
+import type { GraphRunSnapshot, GraphRunSnapshotBase } from "../src/graph.js";
 import { createWidgetGraphDisplay, renderGraphSnapshotLines, renderGraphSnapshotText } from "../src/graph-display.js";
 
-function runningSnapshot(): GraphRunSnapshot {
+function snapshotBase(): GraphRunSnapshotBase {
   return {
     runId: "run-1",
     graphId: "chain",
-    state: "running",
     nodes: [
       { id: "a", attempt: 1, artifactIds: [], state: "succeeded" },
       { id: "b", attempt: 1, artifactIds: [], state: "skipped", skipReason: "route_not_selected" },
@@ -25,6 +24,10 @@ function runningSnapshot(): GraphRunSnapshot {
   };
 }
 
+function runningSnapshot(): GraphRunSnapshot {
+  return { ...snapshotBase(), state: "running" };
+}
+
 test("renderGraphSnapshotLines renders the header, node lines, and usage", () => {
   const lines = renderGraphSnapshotLines(runningSnapshot());
   assert.equal(lines.length, 5);
@@ -39,23 +42,35 @@ test("renderGraphSnapshotLines renders the header, node lines, and usage", () =>
 
 test("renderGraphSnapshotLines includes cost when the usage defines one", () => {
   const snapshot: GraphRunSnapshot = {
-    ...runningSnapshot(),
+    ...snapshotBase(),
+    state: "running",
     usage: { inputTokens: 5, outputTokens: 6, totalTokens: 11, cost: 0.0123 },
   };
   const lines = renderGraphSnapshotLines(snapshot);
   assert.ok(lines.some((line) => line.includes("  usage: 5 in / 6 out, $0.0123")));
 });
 
-test("renderGraphSnapshotText header reflects the completed state", () => {
-  const succeeded: GraphRunSnapshot = { ...runningSnapshot(), state: "succeeded" };
-  assert.ok(renderGraphSnapshotText(succeeded, true).startsWith("workflow_graph run run-1 completed"));
+test("renderGraphSnapshotText exposes the bounded final answer for successful runs", () => {
+  const succeeded: GraphRunSnapshot = {
+    ...snapshotBase(),
+    state: "succeeded",
+    finalAnswer: `answer:${"x".repeat(5_000)}`,
+  };
+  const succeededText = renderGraphSnapshotText(succeeded, true);
+  assert.ok(succeededText.startsWith("workflow_graph run run-1 completed"));
+  assert.match(succeededText, /Final answer:\nanswer:/);
+  assert.match(succeededText, /… \[truncated\]/);
+  assert.ok(succeededText.length < succeeded.finalAnswer.length);
+
+  const runningText = renderGraphSnapshotText(runningSnapshot(), false);
+  assert.ok(runningText.startsWith("workflow_graph run run-1 running"));
+  assert.doesNotMatch(runningText, /Final answer:/);
   const failed: GraphRunSnapshot = {
-    ...runningSnapshot(),
+    ...snapshotBase(),
     state: "failed",
     error: { code: "invalid_state", message: "boom" },
   };
   assert.ok(renderGraphSnapshotText(failed, true).startsWith("workflow_graph run run-1 failed"));
-  assert.ok(renderGraphSnapshotText(runningSnapshot(), false).startsWith("workflow_graph run run-1 running"));
 });
 
 interface UiCall {
@@ -103,7 +118,7 @@ test("createWidgetGraphDisplay updates the widget and status and notifies on com
 
   calls.length = 0;
   display.complete({
-    ...runningSnapshot(),
+    ...snapshotBase(),
     state: "failed",
     error: { code: "invalid_state", message: "boom" },
   });
@@ -113,15 +128,17 @@ test("createWidgetGraphDisplay updates the widget and status and notifies on com
 
   calls.length = 0;
   display.complete({
-    ...runningSnapshot(),
+    ...snapshotBase(),
     state: "cancelled",
     cancellation: { requested: true, reason: "requested" },
   });
   assert.equal(calls.find((call) => call.kind === "notify")?.type, "warning");
 
   calls.length = 0;
-  display.complete({ ...runningSnapshot(), state: "succeeded" });
+  display.complete({ ...snapshotBase(), state: "succeeded", finalAnswer: "done" });
   assert.equal(calls.find((call) => call.kind === "notify")?.type, "info");
+  const completedWidget = calls.find((call) => call.kind === "setWidget");
+  assert.match((completedWidget?.value as string[]).join("\n"), /Final answer:\ndone/);
 
   calls.length = 0;
   display.clear();

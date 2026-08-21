@@ -16,6 +16,7 @@ import {
   GraphAgentRunner,
   type GraphModelRegistryLike,
   type GraphSession,
+  type GraphSessionFactory,
   lastAssistantText,
 } from "../src/graph-agent.js";
 import type { NodeExecutionRequest, RoutedArtifact } from "../src/graph-runtime.js";
@@ -37,11 +38,11 @@ const models: Record<string, { provider: string; id: string }> = {
   "test/explicit": { provider: "test", id: "explicit" },
 };
 
-const registry: GraphModelRegistryLike = {
+const registry = {
   find(provider: string, modelId: string) {
     return models[`${provider}/${modelId}`];
   },
-};
+} as unknown as GraphModelRegistryLike;
 
 interface FakeSessionOptions {
   /** Message history presented to the runner after prompt resolves. */
@@ -73,13 +74,17 @@ class FakeSessionFactory {
     const record = { options, disposed: false, aborted: false };
     this.calls.push(record);
     const config = this.behavior(callIndex);
+    let sessionMessages: AgentMessageLike[] = [];
+    let sessionAborted = false;
     const session: GraphSession = {
-      messages: [],
+      get messages() {
+        return sessionMessages;
+      },
       async prompt() {
         if (config.waitForAbort) {
           await new Promise<void>((resolve) => {
             const check = () => {
-              if (session.aborted) {
+              if (sessionAborted) {
                 resolve();
                 return;
               }
@@ -98,10 +103,10 @@ class FakeSessionFactory {
             await (tool.execute as (id: string, params: unknown) => Promise<unknown>)("call-1", { verdict: "pass" });
         }
         if (config.delayMs !== undefined) await new Promise((resolve) => setTimeout(resolve, config.delayMs));
-        session.messages = [...(config.messages ?? [])];
+        sessionMessages = [...(config.messages ?? [])];
       },
       abort() {
-        session.aborted = true;
+        sessionAborted = true;
         record.aborted = true;
       },
       dispose() {
@@ -229,7 +234,7 @@ test("structured output tool is attached, invoked, and its value becomes structu
   const result = await runner.execute(makeRequest(node, resolvedFrom()));
   assert.equal(result.ok, true);
   if (result.ok) {
-    assert.equal(result.output.structuredOutput?.verdict, "pass");
+    assert.deepEqual(result.output.structuredOutput, { verdict: "pass" });
     assert.equal(result.output.finalText, "returned");
   }
   // The structured tool was registered on the session.

@@ -72,6 +72,7 @@ import {
   type RunState,
   resolveExecutionContext,
   type SkipReason,
+  selectGraphFinalAnswer,
   selectGraphRoutes,
   type Usage,
   validateGraphPreflight,
@@ -336,6 +337,13 @@ class GraphRunEngine implements GraphRunHandle {
         cancellation: this.cancellation ?? { requested: true, reason: "requested" },
       });
     }
+    if (this.runState === "succeeded") {
+      return deepFreeze({
+        ...base,
+        state: "succeeded" as const,
+        finalAnswer: selectGraphFinalAnswer(this.graph, nodes, artifacts),
+      });
+    }
     return deepFreeze({ ...base, state: this.runState });
   }
 
@@ -391,7 +399,11 @@ class GraphRunEngine implements GraphRunHandle {
 
   private emit(event: GraphLifecycleEvent): void {
     this.eventLog.push(event);
-    this.options.onEvent?.(event);
+    try {
+      this.options.onEvent?.(event);
+    } catch {
+      // Lifecycle observers must not prevent the run from reaching completion.
+    }
   }
 
   private nodeSnapshot(runtime: NodeRuntime): NodeSnapshot {

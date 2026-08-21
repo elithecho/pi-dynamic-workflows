@@ -25,12 +25,13 @@
     "README.md"
   ],
   "scripts": {
-    "test": "npm run check && npm run build && npm run test:unit",
+    "test": "npm run check && npm run build && npm run typecheck:tests && npm run test:unit",
     "test:unit": "tsx --test tests/**/*.test.ts",
     "check": "biome check .",
     "format": "biome format --write .",
     "lint": "biome lint .",
     "build": "tsc",
+    "typecheck:tests": "tsc -p tsconfig.test.json",
     "dev": "tsx src/index.ts"
   },
   "keywords": [

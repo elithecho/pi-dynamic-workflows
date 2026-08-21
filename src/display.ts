@@ -194,7 +194,52 @@ export function renderWorkflowText(
   options: WorkflowDisplayOptions = {},
 ): string {
   const header = completed ? "Workflow completed" : "Workflow running";
-  return [header, ...renderWorkflowLines(snapshot, options)].join("\n");
+  const lines = [header, ...renderWorkflowLines(snapshot, options)];
+  if (completed && ownsResult(snapshot)) {
+    lines.push("", "Final result:", formatWorkflowResult(snapshot.result));
+  }
+  return lines.join("\n");
+}
+
+const MAX_WORKFLOW_RESULT_LENGTH = 4_000;
+
+/** Format a workflow result for tool content and bounded TUI rendering. */
+export function formatWorkflowResult(value: unknown, max = MAX_WORKFLOW_RESULT_LENGTH): string {
+  let text: string;
+  if (typeof value === "string") {
+    text = value;
+  } else if (value === undefined) {
+    text = "undefined";
+  } else {
+    try {
+      const seen = new WeakSet<object>();
+      const serialized = JSON.stringify(
+        value,
+        (_key, nestedValue: unknown) => {
+          if (typeof nestedValue === "bigint") return `${nestedValue}n`;
+          if (nestedValue && typeof nestedValue === "object") {
+            if (seen.has(nestedValue)) return "[Circular]";
+            seen.add(nestedValue);
+          }
+          return nestedValue;
+        },
+        2,
+      );
+      text = serialized === undefined ? String(value) : serialized;
+    } catch (error) {
+      text = `[Unable to format result: ${error instanceof Error ? error.message : String(error)}]`;
+    }
+  }
+
+  if (max <= 0) return "";
+  if (text.length <= max) return text;
+  const marker = "… [truncated]";
+  if (max <= marker.length) return marker.slice(0, max);
+  return `${text.slice(0, max - marker.length)}${marker}`;
+}
+
+function ownsResult(snapshot: WorkflowSnapshot): boolean {
+  return Object.hasOwn(snapshot, "result");
 }
 
 function statusLine(snapshot: WorkflowSnapshot, completed: boolean): string {
@@ -229,7 +274,5 @@ function shorten(value: string, max: number): string {
 }
 
 export function preview(value: unknown, max = 80): string {
-  const text = typeof value === "string" ? value : JSON.stringify(value);
-  if (!text) return "";
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+  return formatWorkflowResult(value, max);
 }

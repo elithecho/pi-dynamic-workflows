@@ -86,7 +86,7 @@ export class WorkflowAgent {
         return capture.value as AgentRunResult<TSchemaDef>;
       }
 
-      return this.lastAssistantText(session.messages) as AgentRunResult<TSchemaDef>;
+      return extractLastAssistantText(session.messages) as AgentRunResult<TSchemaDef>;
     } finally {
       removeAbortListener?.();
       session.dispose();
@@ -115,17 +115,19 @@ export class WorkflowAgent {
 
     return parts.join("\n\n");
   }
+}
 
-  private lastAssistantText(messages: unknown[]): string {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const message = messages[i] as Partial<AssistantMessage> | undefined;
-      if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
-      const text = message.content
+/** Return the final assistant message's non-blank text, or fail when it has no usable answer. */
+export function extractLastAssistantText(messages: readonly unknown[]): string {
+  const message = [...messages].reverse().find((candidate) => {
+    return (candidate as Partial<AssistantMessage> | undefined)?.role === "assistant";
+  }) as Partial<AssistantMessage> | undefined;
+  const text = Array.isArray(message?.content)
+    ? message.content
         .filter((part): part is TextContent => part.type === "text")
         .map((part) => part.text)
-        .join("");
-      if (text.trim()) return text;
-    }
-    return "";
-  }
+        .join("")
+    : undefined;
+  if (text?.trim()) return text;
+  throw new Error("Subagent finished with no usable final response");
 }

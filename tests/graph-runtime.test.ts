@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   type GraphRunHandle,
+  type NodeExecutionRequest,
   type NodeExecutor,
   type NodeExecutorResult,
   type RoutedArtifact,
@@ -24,7 +25,6 @@ import {
   type GraphSpec,
   type GraphWaitResult,
   type JsonValue,
-  type NodeExecutionRequest,
   type NodeSnapshot,
   type Usage,
 } from "../src/index.js";
@@ -182,9 +182,33 @@ test("pass path: review-1 verdict pass skips remediation and review-2, final joi
   assert.equal(nodeState(snapshot, "review-2"), "skipped");
   assert.equal(skipReason(snapshot, "review-2"), "route_not_selected");
   assert.equal(nodeState(snapshot, "final-verification"), "succeeded");
+  assert.equal(snapshot.finalAnswer, '{"review-1":"<verdict>pass</verdict>"}');
   // Skipped nodes stay visible in the snapshot with reasons.
   const skipped = snapshot.nodes.filter((node) => node.state === "skipped");
   assert.equal(skipped.length, 2);
+});
+
+test("successful terminal sinks preserve declaration order in the final answer", async () => {
+  const graph: GraphSpec = {
+    version: 1,
+    id: "multi-sink",
+    name: "multi-sink",
+    nodes: [
+      { kind: "agent", id: "root", prompt: "root" },
+      { kind: "agent", id: "sink-b", prompt: "B" },
+      { kind: "agent", id: "sink-a", prompt: "A" },
+    ],
+    edges: [
+      { id: "root-b", from: "root", to: "sink-b" },
+      { id: "root-a", from: "root", to: "sink-a" },
+    ],
+  };
+  const snapshot = await runGraph(graph, {
+    executor: new FakeExecutor({ outcomes: { "sink-a": { finalText: "A" }, "sink-b": { finalText: "B" } } }),
+    parentContext: parent,
+  });
+  assert.equal(snapshot.state, "succeeded");
+  assert.equal(snapshot.finalAnswer, "### sink-b\nB\n\n### sink-a\nA");
 });
 
 test("no-match path: remediation receives review-1 finalText, review-2 runs, join succeeds", async () => {
@@ -203,6 +227,108 @@ test("no-match path: remediation receives review-1 finalText, review-2 runs, joi
   assert.equal(nodeState(snapshot, "remediation"), "succeeded");
   assert.equal(nodeState(snapshot, "review-2"), "succeeded");
   assert.equal(nodeState(snapshot, "final-verification"), "succeeded");
+  assert.equal(snapshot.finalAnswer, '{"review-2":"<verdict>pass</verdict>"}');
+});
+
+test("terminal publish values and mixed terminal sinks are deterministic", async () => {
+  const publishGraph: GraphSpec = {
+    version: 1,
+    id: "publish-terminal",
+    name: "publish terminal",
+    nodes: [
+      { kind: "agent", id: "source", prompt: "source" },
+      {
+        kind: "deterministic",
+        id: "published",
+        operation: "publish",
+        inputArtifacts: [{ nodeId: "source", output: "finalText" }],
+      },
+    ],
+    edges: [{ id: "source-published", from: "source", to: "published" }],
+  };
+  const published = await runGraph(publishGraph, {
+    executor: new FakeExecutor({ outcomes: { source: { finalText: "published answer" } } }),
+    parentContext: parent,
+  });
+  assert.equal(published.finalAnswer, "published answer");
+
+  const mixedGraph: GraphSpec = {
+    version: 1,
+    id: "mixed-terminal",
+    name: "mixed terminal",
+    nodes: [
+      { kind: "agent", id: "root", prompt: "root" },
+      {
+        kind: "deterministic",
+        id: "published",
+        operation: "publish",
+        inputArtifacts: [{ nodeId: "root", output: "finalText" }],
+      },
+      { kind: "agent", id: "answer", prompt: "answer", inputArtifacts: [{ nodeId: "root", output: "finalText" }] },
+    ],
+    edges: [
+      { id: "root-published", from: "root", to: "published" },
+      { id: "root-answer", from: "root", to: "answer" },
+    ],
+  };
+  const mixed = await runGraph(mixedGraph, {
+    executor: new FakeExecutor({ outcomes: { root: { finalText: "root" }, answer: { finalText: "agent answer" } } }),
+    parentContext: parent,
+  });
+  assert.equal(mixed.finalAnswer, "### published\nroot\n\n### answer\nagent answer");
+});
+
+test("canonical deterministic JSON normalizes sparse arrays and sorts object keys", async () => {
+  const nested: JsonValue[] = [];
+  nested.length = 2;
+  nested[1] = { b: 2, a: 1 };
+  const value: JsonValue = { z: nested, a: { b: true, a: 1 } };
+  const snapshot = await runGraph(
+    {
+      version: 1,
+      id: "sparse-terminal",
+      name: "sparse terminal",
+      nodes: [
+        { kind: "agent", id: "source", prompt: "source" },
+        {
+          kind: "deterministic",
+          id: "published",
+          operation: "publish",
+          inputArtifacts: [{ nodeId: "source", output: "value" }],
+        },
+      ],
+      edges: [{ id: "source-published", from: "source", to: "published" }],
+    },
+    {
+      executor: {
+        async execute() {
+          return { ok: true, output: { finalText: "intermediate", value } };
+        },
+      },
+      parentContext: parent,
+    },
+  );
+  assert.equal(snapshot.finalAnswer, '{"a":{"a":1,"b":true},"z":[null,{"a":1,"b":2}]}');
+  assert.deepEqual(JSON.parse(snapshot.finalAnswer), {
+    a: { a: 1, b: true },
+    z: [null, { a: 1, b: 2 }],
+  });
+});
+
+test("a legitimate empty terminal agent output remains an empty final answer", async () => {
+  const snapshot = await runGraph(
+    {
+      version: 1,
+      id: "empty-terminal",
+      name: "empty terminal",
+      nodes: [{ kind: "agent", id: "empty", prompt: "empty" }],
+      edges: [],
+    },
+    { executor: new FakeExecutor({ outcomes: { empty: { finalText: "" } } }), parentContext: parent },
+  );
+  assert.equal(snapshot.state, "succeeded");
+  assert.equal(snapshot.finalAnswer, "");
+  assert.ok("finalAnswer" in snapshot);
 });
 
 test("malformed regex and invalid graphs fail validation before any executor call", async () => {
@@ -272,6 +398,7 @@ test("failure with retries: maxAttempts honored, waiting_retry observable, depen
     onEvent: (event) => events.push(event),
   });
   assert.equal(snapshot.state, "failed");
+  assert.equal("finalAnswer" in snapshot, false);
   assert.equal(executor.attempts.get("flaky"), 3, "exactly three attempts");
   const flaky = snapshot.nodes.find((node) => node.id === "flaky");
   assert.equal(flaky?.state, "failed");
@@ -323,6 +450,7 @@ test("cancellation mid-run: in-flight nodes cancelled, unadmitted skipped, run c
   assert.equal(result.accepted, true);
   const snapshot = await handle.done;
   assert.equal(snapshot.state, "cancelled");
+  assert.equal("finalAnswer" in snapshot, false);
   assert.equal(snapshot.cancellation?.reason, "requested");
   assert.equal(handleNodeState(handle, "a"), "cancelled");
   assert.equal(handleNodeState(handle, "b"), "skipped");
@@ -522,7 +650,7 @@ test("lifecycle events start with run_started and end with a terminal run event"
   assert.equal(events[0]?.type, "run_started");
   const terminal = events[events.length - 1];
   assert.ok(terminal && (terminal.type === "run_completed" || terminal.type === "run_failed"));
-  const nodeEvents = events.filter((event) => event.type === "node_state_changed") as GraphEventWithNodes[];
+  const nodeEvents = events.filter((event) => event.type === "node_state_changed");
   assert.ok(nodeEvents.length > 0);
 });
 

@@ -21,6 +21,7 @@ export {
   createArtifact,
   createDeterministicArtifact,
   DEFAULT_FINAL_TEXT_PATTERN,
+  formatGraphTerminalDetails,
   GRAPH_CONTRACT_VERSION,
   GraphContractError,
   getInvokingParentContext,

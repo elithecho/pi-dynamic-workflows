@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { GraphRunSnapshot, NodeSnapshot } from "./graph.js";
+import { formatGraphFinalAnswer, type GraphRunSnapshot, type NodeSnapshot } from "./graph.js";
 
 export interface GraphDisplayOptions {
   readonly key?: string; // default "workflow_graph"
@@ -36,6 +36,9 @@ export function renderGraphSnapshotLines(snapshot: GraphRunSnapshot): string[] {
       ? `  usage: ${snapshot.usage.inputTokens} in / ${snapshot.usage.outputTokens} out`
       : `  usage: ${snapshot.usage.inputTokens} in / ${snapshot.usage.outputTokens} out, $${cost}`,
   );
+  if (snapshot.state === "succeeded") {
+    lines.push("", "Final answer:", formatGraphFinalAnswer(snapshot.finalAnswer));
+  }
   return lines;
 }
 

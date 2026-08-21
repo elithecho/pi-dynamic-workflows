@@ -3,12 +3,10 @@
  * path, the non-pass remediation path, and predicate safety (finalText-only
  * matching) with regex validation and bounded input.
  *
- * Note on relay absence: Scenario 3's "instrumentation proves no
- * pi.sendMessage / parent follow-up relay" requirement is covered by
- * `tests/graph-tool.test.ts` — the "tool never relays node output through the
- * main agent" test spies on `sendMessage`/`sendUserMessage` and asserts that
- * completion surfaces only via `ctx.ui.notify`. This file therefore focuses
- * on predicate safety, regex rejection, and bounded-input matching.
+ * Terminal-only parent wake-up and intermediate-artifact isolation are covered
+ * by `tests/workflow-extension.test.ts` and `tests/graph-tool.test.ts`. This
+ * file therefore focuses on predicate safety, regex rejection, and bounded-input
+ * matching.
  */
 
 import assert from "node:assert/strict";
@@ -185,21 +183,24 @@ test("scenario 3: predicate safety and bounded matching", async (t) => {
 
     await t2.test("end-to-end: reasoning/tool verdicts do not select the pass route", async () => {
       const fakeFactory: GraphSessionFactory = async () => {
+        let sessionMessages: AgentMessageLike[] = [];
         const session: GraphSession = {
-          messages: [],
+          get messages() {
+            return sessionMessages;
+          },
           async prompt(input: string) {
             if (input.includes("Artifact from implementation (finalText)")) {
-              session.messages = [
+              sessionMessages = [
                 { role: "assistant", content: [{ type: "reasoning", text: "thinking: <verdict>pass</verdict>" }] },
                 { role: "tool", content: ["<verdict>pass</verdict>"] },
                 { role: "assistant", content: [{ type: "text", text: "Needs more work." }] },
               ];
             } else if (input.includes("Artifact from remediation_1 (finalText)")) {
-              session.messages = [{ role: "assistant", content: [{ type: "text", text: "<verdict>pass</verdict>" }] }];
+              sessionMessages = [{ role: "assistant", content: [{ type: "text", text: "<verdict>pass</verdict>" }] }];
             } else if (input.includes("Artifact from final_verification_join (value)")) {
-              session.messages = [{ role: "assistant", content: [{ type: "text", text: "Verified." }] }];
+              sessionMessages = [{ role: "assistant", content: [{ type: "text", text: "Verified." }] }];
             } else {
-              session.messages = [{ role: "assistant", content: [{ type: "text", text: "built it" }] }];
+              sessionMessages = [{ role: "assistant", content: [{ type: "text", text: "built it" }] }];
             }
           },
           abort() {},

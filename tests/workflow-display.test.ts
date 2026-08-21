@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createWorkflowSnapshot,
+  formatWorkflowResult,
   recomputeWorkflowSnapshot,
   renderWorkflowLines,
   renderWorkflowText,
@@ -88,6 +89,44 @@ test("renderWorkflowLines renders runtime-created phases from the phase list", (
   );
 
   assert.ok(lines.some((line) => line.includes("Inspect API 1/1")));
+});
+
+test("renderWorkflowText shows completed string results", () => {
+  const text = renderWorkflowText(snapshot({ result: "final answer" }), true);
+
+  assert.match(text, /Final result:\nfinal answer/);
+});
+
+test("renderWorkflowText shows completed structured, empty, and undefined results", () => {
+  assert.match(renderWorkflowText(snapshot({ result: { ok: true, items: [1, 2] } }), true), /"ok": true/);
+  assert.match(renderWorkflowText(snapshot({ result: "" }), true), /Final result:\n$/);
+  assert.match(renderWorkflowText(snapshot({ result: undefined }), true), /Final result:\nundefined/);
+});
+
+test("renderWorkflowText does not expose a running result", () => {
+  const text = renderWorkflowText(snapshot({ result: "secret" }), false);
+
+  assert.doesNotMatch(text, /Final result|secret/);
+});
+
+test("formatWorkflowResult honors zero, one, and marker-length bounds", () => {
+  const value = "0123456789abcdef";
+
+  assert.equal(formatWorkflowResult(value, 0), "");
+  assert.equal(formatWorkflowResult(value, 1), "…");
+  assert.equal(formatWorkflowResult(value, 13), "… [truncated]");
+  assert.equal(formatWorkflowResult(value, 14), "0… [truncated]");
+  assert.ok(formatWorkflowResult(value, 14).length <= 14);
+});
+
+test("formatWorkflowResult bounds circular and bigint values", () => {
+  const circular: { self?: unknown; value?: bigint } = { value: 1n };
+  circular.self = circular;
+  const text = formatWorkflowResult(circular, 40);
+
+  assert.match(text, /\[Circular\]|truncated/);
+  assert.ok(text.length <= 40);
+  assert.match(formatWorkflowResult({ value: 1n }), /1n/);
 });
 
 test("renderWorkflowText respects log limits", () => {

@@ -25,7 +25,7 @@ declared graph is deterministic, verifiable, and self-limiting.
 | Routing | Regex predicates over a source's final text, with an `otherwise` fallback | Explicit program logic |
 | Joins | Auto-inserted deterministic join nodes on convergent edges | Manual — you decide what to pass on and what to `return` |
 | Budgets | `budget({ maxConcurrency, ... })` enforced by the background runtime | Token tracker: `budget.total / spent() / remaining()` |
-| Completion | Background run; surfaced via the UI widget, never relayed | Runs to completion; the result returns to the calling turn |
+| Completion | Background run; terminal state and final answer wake the parent, while intermediate artifacts stay internal | Runs to completion; the result is rendered directly in the completed tool result and returns to the calling turn |
 | Extra surfaces | None — pure AST interpretation, static arguments only | `phase`, `log`, `args`, `cwd`, `opts.schema` structured output |
 
 Use `workflow_graph` when you have ≥ 3 agents in a fixed topology and want predicate routing,
@@ -110,13 +110,19 @@ compilation. It is the most verbose surface and not recommended for agent author
 - **`status`** / **`wait`** / **`cancel`** all take the `runId` (plus optional `timeoutMs` for
   `wait` and an optional `reason` — `requested` | `parent_aborted` | `timeout` |
   `budget_exhausted` — for `cancel`).
-- Completion surfaces through the `workflow_graph` UI widget (and lifecycle events), **never**
-  relayed to the main agent as a follow-up turn.
+- Progress surfaces through the `workflow_graph` UI widget. When the run reaches a terminal state,
+  the extension sends one custom follow-up that wakes the parent; successful runs include only the
+  canonical final answer from their successful topology sink(s). Intermediate node artifacts
+  are never relayed.
 
 Two guarantees to rely on: **start-before-completion** — the `start` call returns as soon as the
-run is registered, whatever the graph's duration; and **relay-absence** — the tool never sends a
-completion message into the main agent's turn. If the agent needs the outcome, it must poll with
-`status` / `wait` itself; otherwise the user watches the widget.
+run is registered, whatever the graph's duration; and **terminal-only relay** — completion wakes the
+parent once with the terminal state and, on success, the final answer. Every successful topology
+sink contributes in graph declaration order: an agent contributes finalText, while a deterministic
+sink contributes its string value or stable JSON text. A single sink is returned verbatim; multiple
+sinks use labelled `### nodeId` blocks. Failed runs include bounded error code/node/message metadata;
+cancelled runs include their cancellation reason. If the agent needs the full snapshot, it can still
+poll with `status` / `wait`.
 
 Call shapes:
 
@@ -125,7 +131,7 @@ workflow_graph { operation: "start", script: "<v1 DSL source>" }   → runId, st
 workflow_graph { operation: "start", definition: { nodes, routes } }  → runId, state, immediately
 workflow_graph { operation: "start", graph: { version: 1, ... } }     → runId, state, immediately
 workflow_graph { operation: "status", runId }                         → run state + skipped/failed counts
-workflow_graph { operation: "wait", runId, timeoutMs? }               → run state or "still running"
+workflow_graph { operation: "wait", runId, timeoutMs? }               → run state or "still running"; completed success includes final answer
 workflow_graph { operation: "cancel", runId, reason? }                → "cancel accepted" or "not accepted"
 ```
 
@@ -223,10 +229,12 @@ return { inventory, summary }
 ```
 
 `name` and `description` are required meta keys (optional `phases` docs an expected outline);
-`phase(...)` calls drive the live progress view at runtime, and `Esc` cancels an active run. It
-still works and is the right tool for imperative sequences (`parallel`, `pipeline`,
-`opts.schema` structured output, `args`, `cwd`), but it is not the recommended path for new
-graphs — prefer `workflow_graph`.
+`phase(...)` calls drive the live progress view at runtime, and `Esc` cancels an active run. On
+completion, the tool renders a bounded `Final result:` block directly; it does not depend on a
+later parent-model fetch. Failed or empty unstructured subagent responses become `null` branch
+results and are marked as agent errors. It still works and is the right tool for imperative
+sequences (`parallel`, `pipeline`, `opts.schema` structured output, `args`, `cwd`), but it is
+not the recommended path for new graphs — prefer `workflow_graph`.
 
 ## Picking a budget
 

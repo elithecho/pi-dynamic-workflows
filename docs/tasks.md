@@ -258,7 +258,7 @@ Contract → slower of the two foundation lanes → tracer bullet → review →
     - Review 2 runs after remediation;
     - final verification receives the selected branch artifacts.
 
-- [ ] **Scenario-3: Predicate safety and relay absence**
+- [ ] **Scenario-3: Predicate safety and terminal-only completion**
   - Files: integration fixtures/tests only.
   - Depends on: Integration-1.
   - Must not touch: unrelated workflow features.
@@ -267,7 +267,7 @@ Contract → slower of the two foundation lanes → tracer bullet → review →
     - tool output or thinking containing the verdict does not trigger the edge;
     - malformed regex is rejected;
     - bounded input prevents unbounded matching work;
-    - instrumentation proves no `pi.sendMessage`, parent follow-up, or equivalent main-agent relay transports intermediate artifacts.
+    - instrumentation proves terminal completion may wake the parent once, but no `pi.sendMessage`, parent follow-up, or equivalent relay transports intermediate artifacts.
 
 ## Fan-Out Order and Non-Overlap Rules
 
@@ -315,7 +315,7 @@ Peak safe concurrency for the MVP is **two implementation lanes**.
     - [ ] intermediate artifacts bypass the main agent;
     - [ ] graph start returns a run ID immediately;
     - [ ] status, wait, and cancel operate on the background run;
-    - [ ] completion uses graph lifecycle/UI events rather than context relay;
+    - [ ] completion uses graph lifecycle/UI events plus one terminal-only final-answer wake-up; intermediate artifacts never enter the parent context;
     - [ ] graph runtime alone controls graph concurrency;
     - [ ] structured output remains optional.
   - Block completion until: all critical/high findings are resolved and medium findings have an explicit ship-or-follow-up decision.
@@ -346,7 +346,7 @@ The MVP is complete only when evidence demonstrates:
 1. Review 1's final message matching `<verdict>\s*pass\s*</verdict>` skips remediation and Review 2.
 2. A non-match runs remediation and Review 2.
 3. Thinking, tool output, and intermediate messages cannot trigger final-text routes.
-4. Downstream nodes consume engine-routed artifacts without a main-agent relay.
+4. Downstream nodes consume engine-routed artifacts without an intermediate-artifact main-agent relay.
 5. Explicit node models execute on the requested available model.
 6. Nodes without a model inherit the invoking parent model and thinking level.
 7. An unavailable explicit model fails preflight without fallback.

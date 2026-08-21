@@ -3,6 +3,8 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
   type CancellationReason,
+  formatGraphFinalAnswer,
+  formatGraphTerminalDetails,
   type GraphContractError,
   type GraphError,
   type GraphLifecycleEvent,
@@ -30,6 +32,8 @@ export interface WorkflowGraphToolOptions {
   readonly sessionFactory?: GraphSessionFactory;
   /** Injectable run registry; defaults to a per-tool-instance GraphRunRegistry. */
   readonly registry?: GraphRunRegistry;
+  /** Called once when a run reaches any terminal state. */
+  readonly onTerminalCompletion?: (snapshot: GraphRunSnapshot) => void | Promise<void>;
 }
 
 export type WorkflowGraphToolInput = {
@@ -80,7 +84,7 @@ export function createWorkflowGraphTool(
     name: "workflow_graph",
     label: "Workflow Graph",
     description:
-      "Run a declarative graph workflow in the background. The recommended authoring surface is a `script` — a small declarative JS DSL (`export const meta = { name, description }` first, `const <id> = agent(prompt, opts?)` declarations, edges with `to` / `when(...).otherwise(...)`, at most one `budget({...})`) compiled into a GraphSpec; `definition` (JSON nodes/routes) and `graph` (raw GraphSpec) remain as escape hatches. start returns a runId immediately; status/wait/cancel manage that process-local run. Distinct from the legacy imperative JavaScript `workflow` tool.",
+      "Run a declarative graph workflow in the background. The recommended authoring surface is a `script` — a small declarative JS DSL (`export const meta = { name, description }` first, `const <id> = agent(prompt, opts?)` declarations, edges with `to` / `when(...).otherwise(...)`, at most one `budget({...})`) compiled into a GraphSpec; `definition` (JSON nodes/routes) and `graph` (raw GraphSpec) remain as escape hatches. start returns a runId immediately; terminal completion wakes the parent with the final answer while intermediate artifacts remain internal. status/wait/cancel manage that process-local run. Distinct from the legacy imperative JavaScript `workflow` tool.",
     promptSnippet:
       "Run a declarative graph workflow. For operation \"start\", pass exactly one of: `script` (a v1 Graph JS DSL source, e.g. `export const meta = { name: 'demo', description: 'Demo graph.' }\nconst a = agent('Do A.')\nconst b = agent('Do B.')\na.to(b)`), `definition` (JSON nodes/routes), or `graph` (raw GraphSpec v1 JSON). start returns a runId immediately — poll with \"status\"/\"wait\", stop with \"cancel\".",
     promptGuidelines: [
@@ -91,7 +95,7 @@ export function createWorkflowGraphTool(
       "workflow_graph is declarative: do NOT write imperative `await agent(...)` / `parallel(...)` scripts here — that is the legacy `workflow` tool.",
       "start returns a runId immediately and the graph runs in the background; the main agent stays available for other work.",
       'Use operation "status" or "wait" with the runId to observe a run; use operation "cancel" to stop it.',
-      "Progress and completion are surfaced through the workflow_graph UI widget, not through a follow-up agent turn.",
+      "Progress is surfaced through the workflow_graph UI widget; terminal completion may wake the parent with only the canonical final answer from every successful topology sink (agent finalText or deterministic value, labelled for multiple sinks; never intermediate artifacts).",
     ],
     parameters: workflowGraphToolSchema,
     prepareArguments(args) {
@@ -137,7 +141,18 @@ export function createWorkflowGraphTool(
             modelRegistry: ctx.modelRegistry,
             onEvent: (event: GraphLifecycleEvent) => {
               if (event.type === "run_completed" || event.type === "run_failed" || event.type === "run_cancelled") {
-                display.complete(event.snapshot);
+                try {
+                  display.complete(event.snapshot);
+                } catch {
+                  // Display failures must not affect graph execution or completion relay.
+                }
+                try {
+                  void Promise.resolve(options.onTerminalCompletion?.(event.snapshot)).catch(() => {
+                    // Completion relay failures must not affect graph execution.
+                  });
+                } catch {
+                  // Completion relay failures must not affect graph execution.
+                }
               } else {
                 const snap = registry.snapshot(event.runId);
                 if (snap !== undefined) display.update(snap);
@@ -164,11 +179,13 @@ export function createWorkflowGraphTool(
           const run = result.result.run;
           const skipped = run.nodes.filter((node) => node.state === "skipped").length;
           const failed = run.nodes.filter((node) => node.state === "failed").length;
+          const finalAnswer =
+            run.state === "succeeded" ? `\nFinal answer:\n${formatGraphFinalAnswer(run.finalAnswer)}` : "";
           return {
             content: [
               {
                 type: "text",
-                text: `workflow_graph run ${run.runId}: ${run.state} (${skipped} skipped, ${failed} failed)`,
+                text: `workflow_graph run ${run.runId}: ${run.state} (${skipped} skipped, ${failed} failed)${finalAnswer}${formatGraphTerminalDetails(run)}`,
               },
             ],
             details: { ok: true, result: result.result },
@@ -180,8 +197,13 @@ export function createWorkflowGraphTool(
           if (!result.ok) throw toolFailure("wait", result.error);
           const run = result.result.run;
           const state = result.result.completed ? run.state : "still running";
+          const finalAnswer =
+            run.state === "succeeded" ? `\nFinal answer:\n${formatGraphFinalAnswer(run.finalAnswer)}` : "";
+          const terminalDetails = result.result.completed ? formatGraphTerminalDetails(run) : "";
           return {
-            content: [{ type: "text", text: `workflow_graph run ${run.runId}: ${state}` }],
+            content: [
+              { type: "text", text: `workflow_graph run ${run.runId}: ${state}${finalAnswer}${terminalDetails}` },
+            ],
             details: { ok: true, result: result.result },
           };
         }
