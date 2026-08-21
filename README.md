@@ -1,12 +1,17 @@
 # pi-dynamic-workflows
 
-> Claude-Code-style dynamic workflows for [Pi](https://github.com/earendil-works/pi).
+> Graph-native dynamic workflows for [Pi](https://github.com/earendil-works/pi).
 
-A Pi extension that adds a `workflow` tool. Instead of one assistant doing everything sequentially, the model writes a small JavaScript script that fans out the work across many isolated subagents, then synthesizes the results.
+A Pi extension for declarative multi-agent graphs. Agents declare nodes, routing edges, fan-out,
+joins, and budgets; `workflow_graph` compiles and runs the graph in the background.
 
-Great for codebase audits, multi-perspective review, large refactors, and fan-out research.
+## Breaking change in 2.0.0
 
-Inspired by Anthropic's [dynamic workflows in Claude Code](https://claude.com/blog/introducing-dynamic-workflows-in-claude-code).
+The legacy imperative `workflow` tool has been removed. The `./workflow` package subpath and
+legacy root exports (`createWorkflowTool`, `runWorkflow`, `WorkflowAgent`, and legacy display
+helpers) are also removed. `workflow_graph` is now the sole workflow tool and uses a declarative
+DSL. Migrate imperative scripts to `workflow_graph` scripts, or use its `definition` and `graph`
+inputs for programmatic builders; see [`docs/usage.md`](docs/usage.md).
 
 ## Install
 
@@ -20,154 +25,30 @@ Or load directly for development:
 pi -e ./src/index.ts
 ```
 
-Then in Pi:
-
-```text
-/reload
-```
-
-That's it. The extension registers a `workflow` tool and activates it on session start.
+Then in Pi, run `/reload`. The extension registers and activates the `workflow_graph` tool.
 
 ## Skill
 
-This repo ships a Pi skill at `skills/pi-workflow/SKILL.md` for agents that want to author these tools without re-reading the DSL. Install it with one of:
+This repo ships a Pi skill at `skills/pi-workflow/SKILL.md` for agents authoring graph workflows.
+Install it with one of:
 
 ```bash
-# npm
-npx skills add https://github.com/elithecho/pi-dynamic-workflow --skill pi-workflow
-
-# pnpm
-pnpx skills add https://github.com/elithecho/pi-dynamic-workflow --skill pi-workflow
-
-# bun
-bunx skills add https://github.com/elithecho/pi-dynamic-workflow --skill pi-workflow
+npx skills add https://github.com/elithecho/pi-dynamic-workflows --skill pi-workflow
+pnpx skills add https://github.com/elithecho/pi-dynamic-workflows --skill pi-workflow
+bunx skills add https://github.com/elithecho/pi-dynamic-workflows --skill pi-workflow
 ```
 
-An installable Pi skill for agents lives at [`skills/pi-workflow/SKILL.md`](skills/pi-workflow/SKILL.md).
+## Graph workflow scripts
 
-## Usage
-
-Just ask Pi for a workflow in plain language:
-
-```text
-Run a workflow to inspect this repository and summarize the main modules.
-```
-
-The model will write a workflow script and call the `workflow` tool. Live progress shows up inline:
-
-```text
-◆ Workflow: inspect_project (3/3 done)
-  ✓ Scan 1/1
-    #1 ✓ repo inventory
-  ✓ Analyze 2/2
-    #2 ✓ source modules
-    #3 ✓ final summary
-```
-
-Press `Esc` to cancel a running workflow. Active subagents are aborted and surfaced as skipped.
-
-For an agent-facing how-to guide, see [`docs/usage.md`](docs/usage.md).
-
-## Workflow script shape
-
-A workflow is plain JavaScript. The first statement must export literal metadata. `name` and `description` are required; `phases` is optional documentation for an expected outline. The live progress view is driven by `phase(...)` calls at runtime:
-
-```js
-export const meta = {
-  name: 'inspect_project',
-  description: 'Inspect a repository and summarize the main modules',
-  phases: [
-    { title: 'Scan' },
-    { title: 'Analyze' },
-  ],
-}
-
-phase('Scan')
-const inventory = await agent('Inspect the repository structure.', {
-  label: 'repo inventory',
-})
-
-phase('Analyze')
-const summary = await agent(
-  'Summarize the main modules from this inventory:\n' + inventory,
-  { label: 'module summary' },
-)
-
-return { inventory, summary }
-```
-
-Phases are discovered as the script runs, so conditional and loop-created phases work naturally. If a branch is skipped, its phase does not show up as an empty progress row.
-
-### Editor IntelliSense
-
-Reusable workflow files can opt into editor hints for workflow globals:
-
-```js
-/// <reference types="pi-dynamic-workflows/workflow" />
-```
-
-This declares `agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `cwd`, and `budget` for TypeScript-aware editors.
-
-### Available globals
-
-| Global | Description |
-| --- | --- |
-| `agent(prompt, opts)` | Spawn an isolated subagent. Returns its final text or, with `opts.schema`, a validated object. |
-| `parallel(thunks)` | Run an array of `() => agent(...)` thunks concurrently. Results are returned in input order. |
-| `pipeline(items, ...stages)` | Run each item through sequential stages while items fan out. Each stage receives `(prev, original, index)`. |
-| `phase(title)` | Mark the current phase. Used for grouping in the live progress view. |
-| `log(message)` | Append a workflow-level log line. |
-| `args` | Optional JSON value passed in via the tool's `args` parameter. |
-| `cwd`, `process.cwd()` | Current working directory for subagents. |
-| `budget` | `{ total, spent(), remaining() }` token budget tracker. |
-
-### Determinism rules
-
-Workflow scripts are evaluated inside a Node `vm` sandbox. The following are intentionally unavailable:
-
-- `Date.now()`, `new Date()`
-- `Math.random()`
-- `require`, `import`, `fs`, network APIs
-- spreads, computed keys, template interpolation, function calls inside `meta`
-
-This keeps `meta` parseable, runs reproducible, and the surface area small.
-
-### Structured subagent output
-
-Pass a JSON Schema via `opts.schema` and the subagent will return a validated object:
-
-```js
-const finding = await agent('Find security-sensitive files.', {
-  label: 'security scan',
-  schema: {
-    type: 'object',
-    properties: {
-      paths: { type: 'array', items: { type: 'string' } },
-      reason: { type: 'string' },
-    },
-    required: ['paths', 'reason'],
-  },
-})
-```
-
-Under the hood this is a Pi `structured_output` tool with `terminate: true`, so the subagent ends on that call without an extra assistant turn.
-
-## Graph workflows (`workflow_graph`)
-
-The extension also registers a `workflow_graph` tool. Where `workflow` scripts are imperative
-plain JS that runs to completion, `workflow_graph` scripts are **declarative**: they declare
-agent nodes and regex-routed edges that compile into a graph and run in a background runtime.
-Start returns a `runId` immediately; `status`, `wait`, and `cancel` manage the run.
-
-The canonical example — code, review, then fix-or-ship — is one conditional plus a convergence
-point:
+The leading authoring surface is a small declarative JavaScript DSL. It is compiled into a
+`GraphSpec`; scripts are never evaluated as general JavaScript.
 
 ```js
 export const meta = { name: 'fix_or_ship', description: 'Coder → review → fix then ship, or ship directly.' }
 
-const coder  = agent('You are a coder agent. Read the coder skill and implement the change.', { role: 'implementation' })
-const review = agent('Review the change. Respond with exactly <verdict>change</verdict> or <verdict>pass</verdict>.', { role: 'reviewer' })
-const fixer  = agent('Apply the requested changes.', { role: 'implementation' })
+const coder  = agent('Implement the change.', { role: 'implementation' })
+const review = agent('Review the change.', { role: 'reviewer' })
+const fixer  = agent('Apply requested changes.', { role: 'implementation' })
 const done   = agent('Finalize and report.', { role: 'verifier' })
 
 coder.to(review)
@@ -175,88 +56,82 @@ review.when('<verdict>change</verdict>', fixer).otherwise(done)
 fixer.to(done)
 ```
 
-`done` has two distinct sources (`review` via otherwise, `fixer` via always), so the compiler
-auto-inserts a deterministic `join` node (`done_join`) and rewrites both inbound edges onto it.
-On the **change path** the predicate matches, `fixer` runs on `review.finalText`, and `done`
-receives `{ fixer: "<fixer finalText>" }`. On the **pass path** the predicate misses, `fixer` is
-skipped (`route_not_selected`), the otherwise edge fires, and `done` receives `{ review: "<review
-finalText>" }`.
-
-Fan-out is just multiple `.to()` edges: targets become ready together and run concurrently,
-bounded by `budget({ maxConcurrency })` (default 4):
+A convergent target receives an automatic deterministic join. Fan-out is multiple `.to()` edges:
 
 ```js
-export const meta = { name: 'audit', description: 'Scan, then three analyses, then synthesize.' }
-
-const scan   = agent('Inventory the repo.')
-const facts  = agent('Collect facts about structure.')
-const risks  = agent('Collect risks about security.')
-const dups   = agent('Find duplicated responsibility.')
-const report = agent('Synthesize the three analyses.')
-
+export const meta = { name: 'audit', description: 'Scan, analyze, and synthesize.' }
+const scan = agent('Inventory the repository.')
+const facts = agent('Collect structural facts.')
+const risks = agent('Collect security risks.')
+const report = agent('Synthesize the analyses.')
 scan.to(facts)
 scan.to(risks)
-scan.to(dups)
 facts.to(report)
 risks.to(report)
-dups.to(report)
-
 budget({ maxConcurrency: 3 })
 ```
 
-The `start` operation takes exactly one of three mutually-exclusive inputs:
+The `start` operation accepts exactly one input:
 
-| Input | Form |
+| Input | Use |
 | --- | --- |
-| `script` | A declarative script as above — the leading surface. |
-| `definition` | JSON `nodes`/`routes` for programmatic builders that prefer data over JS. |
-| `graph` | A raw `GraphSpec`, validated for full-contract control. |
+| `script` | Declarative Graph JS DSL; recommended for agent-authored workflows. |
+| `definition` | JSON nodes and routes for programmatic builders. |
+| `graph` | A complete, validated raw `GraphSpec`. |
 
-Declarative vs imperative at a glance:
+```text
+workflow_graph { operation: "start", script: "<graph script>" } → runId
+workflow_graph { operation: "status", runId }                  → run state
+workflow_graph { operation: "wait", runId, timeoutMs? }        → run state/final answer
+workflow_graph { operation: "cancel", runId, reason? }         → cancellation result
+```
 
-| | `workflow_graph` (declarative) | `workflow` (imperative) |
-| --- | --- | --- |
-| Script shape | Declares nodes and routed edges; no control flow | Plain JS: `await`, loops, `parallel(...)`, `return` |
-| Execution | Compiled to a graph, run in the background by the graph runtime | Sandbox runs to completion; the result returns to the calling turn |
-| Routing | Regex predicates over a source's final text | Explicit program logic |
+`start` returns immediately while the graph runs in the background. Progress appears in the
+`workflow_graph` widget. A terminal follow-up wakes the parent once with the canonical final
+answer from successful sinks; intermediate artifacts remain inside the graph runtime.
 
-The v1 grammar, error taxonomy, and both fixtures are frozen in
-[`docs/adr/0002-graph-script-dsl.md`](docs/adr/0002-graph-script-dsl.md); the design walkthrough
-lives in [`docs/graph-js.md`](docs/graph-js.md). For the imperative tool, see
-[Workflow script shape](#workflow-script-shape) above. Graph scripts are never evaluated — the
-compiler interprets a restricted AST, so there are no ambient built-ins (`JSON`, `Math`,
-`Promise`), and every argument must be a static literal; violations surface as `script_*` errors
-with a source location.
+### DSL rules
 
-Editor IntelliSense for graph scripts:
+The first statement must be `export const meta = { name, description, id? }`. Remaining statements
+are agent declarations, `.to()` edges, `.when(...).otherwise(...)` routed edges, and at most one
+`budget({...})` call. Arguments are static literals only: no `await`, `return`, loops, imports,
+arrays, spreads, interpolation, or other calls or arbitrary member access. The declared `.to()`,
+`.when()`, and `.otherwise()` edge methods are allowed.
 
 ```js
 /// <reference types="pi-dynamic-workflows/workflow-graph" />
 ```
 
+The full grammar, error taxonomy, and acceptance fixtures are in
+[`docs/adr/0002-graph-script-dsl.md`](docs/adr/0002-graph-script-dsl.md); the usage guide is
+[`docs/usage.md`](docs/usage.md).
+
 ## How it works
 
 ```text
 user prompt
-  → Pi model writes a workflow script
-  → workflow tool parses + runs script in a vm sandbox
-  → script calls agent(), parallel(), pipeline()
-  → each agent() spawns an in-memory Pi subagent session
-  → snapshots stream back as compact progress
-  → final structured result returned to the parent assistant
+  → Pi model writes a declarative graph script
+  → workflow_graph compiles the script to GraphSpec
+  → graph runtime schedules nodes, routes, joins, retries, and budgets
+  → child Pi sessions publish finalText artifacts to downstream nodes
+  → terminal graph state wakes the parent with the canonical answer
 ```
 
-Subagents run in fresh in-memory Pi sessions with the standard coding tools, so they can read files, run shell commands, and call structured output exactly like a normal Pi turn.
+Graph nodes run in fresh in-memory Pi sessions with standard coding tools. The graph runtime owns
+concurrency, routing, retries, cancellation, and artifact handoff. Structured output remains
+available to graph nodes through the shared `structured-output` module.
 
 ## Library modules
 
 | File | Purpose |
 | --- | --- |
-| `src/workflow.ts` | AST-validated parser and sandboxed workflow runtime. |
-| `src/workflow-tool.ts` | The Pi `workflow` tool, prompt guidelines, rendering, abort handling. |
-| `src/agent.ts` | `WorkflowAgent`, an in-memory Pi subagent runner. |
-| `src/structured-output.ts` | Terminating structured-output tool backed by TypeBox/JSON Schema. |
-| `src/display.ts` | Workflow snapshots and compact text renderers. |
+| `src/graph.ts` | Graph contract, validation, routes, artifacts, and final answers. |
+| `src/graph-tool.ts` | The Pi `workflow_graph` tool and its DSL guidance. |
+| `src/graph-agent.ts` | Direct Pi child-session execution for graph nodes. |
+| `src/graph-runtime.ts` | Background graph scheduler and execution state. |
+| `src/graph-definition.ts` | JSON graph-definition compiler. |
+| `src/graph-script.ts` | Declarative Graph JS compiler. |
+| `src/structured-output.ts` | Shared terminating structured-output tool. |
 | `extensions/workflow.ts` | The Pi extension entrypoint. |
 
 ## Development
@@ -267,14 +142,13 @@ npm test     # biome check + tsc + unit tests
 npm run dev
 ```
 
-The graph contract targets the Pi SDK `0.78.x` API surface (the development dependencies
-are pinned to `0.78.0`); graph execution must obtain the invoking parent's actual model and
-thinking level through its explicit extension adapter. Parser unit tests live in
-`tests/workflow-parser.test.ts` and cover both accepted and rejected script shapes.
+The graph contract targets the Pi SDK `0.78.x` API surface. The development dependencies are
+pinned to `0.78.0`.
 
 ## Status
 
-This is a prototype. It implements the core workflow primitive (script, subagents, parallel/pipeline, phases, abort, structured output) but does not yet implement persisted or resumable runs, or a `/workflows` manager.
+This is a prototype. It implements process-local background graph runs but does not yet implement
+persisted or resumable runs, or a `/workflows` manager.
 
 ## License
 

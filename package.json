@@ -1,7 +1,7 @@
 {
   "name": "pi-dynamic-workflows",
-  "version": "1.0.1",
-  "description": "Claude-Code-style dynamic workflow orchestration for Pi.",
+  "version": "2.0.0",
+  "description": "Declarative graph-native workflow orchestration for Pi.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -9,9 +9,6 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    },
-    "./workflow": {
-      "types": "./types/workflow.d.ts"
     },
     "./workflow-graph": {
       "types": "./types/workflow-graph.d.ts"
@@ -25,12 +22,14 @@
     "README.md"
   ],
   "scripts": {
-    "test": "npm run check && npm run build && npm run typecheck:tests && npm run test:unit",
+    "test": "npm run check && npm run build && npm run verify:dist && npm run typecheck:tests && npm run test:unit",
     "test:unit": "tsx --test tests/**/*.test.ts",
     "check": "biome check .",
     "format": "biome format --write .",
     "lint": "biome lint .",
-    "build": "tsc",
+    "build": "node scripts/clean-dist.mjs && tsc",
+    "verify:dist": "node scripts/verify-dist.mjs",
+    "prepack": "npm run build && npm run verify:dist",
     "typecheck:tests": "tsc -p tsconfig.test.json",
     "dev": "tsx src/index.ts"
   },

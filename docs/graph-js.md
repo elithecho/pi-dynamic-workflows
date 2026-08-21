@@ -1,5 +1,7 @@
 # Graph JS — declarative script authoring for graph-native workflows
 
+> **Historical planning document:** superseded for current product scope by [ADR 0003](adr/0003-remove-legacy-imperative-workflow.md). Legacy comparisons and migration assumptions below describe the original design history; current authoring uses `workflow_graph` exclusively.
+>
 > **Status: plan — amendment 2, ready for staged execution.** This supersedes the first draft
 > and resolves the solo-review critique (below). It adopts a deliberately **small v1 grammar**,
 > fixes the examples, and adds the staged-workflow handoff. Implementation lands as

@@ -1,5 +1,7 @@
 # Graph-Native Staged Workflows — Execution Plan
 
+> **Historical planning document:** superseded for current product scope by [ADR 0003](adr/0003-remove-legacy-imperative-workflow.md). Legacy workflow references below describe the original implementation plan and are not current API guidance.
+
 **Status:** Accepted for staged implementation
 **Target repository:** `/Users/elijah/Workspace/pi-dynamic-workflows`
 **Reference repository:** `/Users/elijah/Workspace/pi-subagents` (patterns only; no required runtime dependency)

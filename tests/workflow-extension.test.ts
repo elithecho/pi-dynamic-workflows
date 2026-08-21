@@ -67,24 +67,59 @@ function isWorkflowGraphTool(value: unknown): value is WorkflowGraphTool {
 function installExtension(executor: NodeExecutor): {
   readonly tool: WorkflowGraphTool;
   readonly sent: SentMessage[];
+  readonly registeredToolNames: string[];
+  readonly activationCalls: string[][];
+  activateSessionStart(): void;
 } {
   const tools: unknown[] = [];
   const sent: SentMessage[] = [];
+  const activationCalls: string[][] = [];
+  let activeTools = ["existing_tool"];
+  let sessionStartHandler: (() => void) | undefined;
   const pi = {
     getThinkingLevel: () => "medium" as const,
+    getActiveTools: () => activeTools,
     registerTool(tool: unknown) {
       tools.push(tool);
+    },
+    setActiveTools(next: string[]) {
+      activeTools = next;
+      activationCalls.push(next);
     },
     sendMessage(message: SentMessage["message"], options: SentMessage["options"]) {
       sent.push({ message, options });
     },
-    on() {},
+    on(event: string, handler: () => void) {
+      if (event === "session_start") sessionStartHandler = handler;
+    },
   } as unknown as ExtensionAPI;
   extension(pi, { executor });
   const tool = tools.find(isWorkflowGraphTool);
   assert.ok(tool, "workflow_graph was registered");
-  return { tool, sent };
+  const registeredToolNames = tools.map((value) => (value as { name: string }).name);
+  assert.deepEqual(registeredToolNames, ["workflow_graph"]);
+  assert.ok(sessionStartHandler, "session_start handler was registered");
+  return {
+    tool,
+    sent,
+    registeredToolNames,
+    activationCalls,
+    activateSessionStart() {
+      sessionStartHandler?.();
+    },
+  };
 }
+
+test("extension registers and activates only workflow_graph", () => {
+  const installed = installExtension({
+    async execute() {
+      return { ok: true, output: { finalText: "done" } };
+    },
+  });
+  assert.deepEqual(installed.registeredToolNames, ["workflow_graph"]);
+  installed.activateSessionStart();
+  assert.deepEqual(installed.activationCalls, [["existing_tool", "workflow_graph"]]);
+});
 
 test("extension relays exactly one terminal success with only the canonical answer", async () => {
   const executor: NodeExecutor = {
