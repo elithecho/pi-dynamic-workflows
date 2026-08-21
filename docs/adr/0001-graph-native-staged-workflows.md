@@ -1,8 +1,11 @@
 ---
-status: accepted
+status: superseded
+superseded-by: 0003-remove-legacy-imperative-workflow.md
 ---
 
 # Make staged workflows graph-native in pi-dynamic-workflows
+
+> **Superseded:** [ADR 0003](0003-remove-legacy-imperative-workflow.md) removes the separate imperative workflow mode. This ADR is preserved as the historical record of the original graph-native decision.
 
 We will implement staged workflows as a declarative, graph-native execution mode in `pi-dynamic-workflows`, provisionally exposed as `workflow_graph`, while preserving the existing JavaScript `workflow` runtime as a separate legacy mode. The graph runtime will create Pi agent sessions directly through the Pi SDK; `pi-subagents` may inform implementation patterns but will not be a required runtime dependency.
 

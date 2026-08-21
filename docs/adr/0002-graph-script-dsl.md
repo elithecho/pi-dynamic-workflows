@@ -4,6 +4,8 @@ status: accepted
 
 # Graph JS: freeze the v1 declarative script DSL contract
 
+> **Historical note:** ADR 0003 makes `workflow_graph` the sole workflow tool. Any legacy-mode comparisons in this frozen DSL record are historical context, not current product guidance.
+
 The graph-native workflow mode gains a third authoring surface: a small declarative JavaScript
 script (`export const meta` first, then `const <id> = agent(...)`, `.to()`, `.when().otherwise()`,
 `budget()`) compiled into the frozen `GraphSpec` and executed by the existing background graph

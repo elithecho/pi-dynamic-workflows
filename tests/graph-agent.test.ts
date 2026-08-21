@@ -373,7 +373,7 @@ test("input artifacts are embedded into the prompt", async () => {
   const customTools = options?.customTools ?? [];
   assert.ok(customTools.length > 0, "runner passed base tools");
   assert.ok(
-    !customTools.some((tool) => tool.name === "workflow" || tool.name === "subagent" || tool.name.includes("agent")),
+    !customTools.some((tool) => tool.name === "subagent" || tool.name.includes("agent")),
     "no nested orchestration tools registered",
   );
 });
@@ -386,7 +386,6 @@ test("nested orchestration tools are never added to sessions", async () => {
   const result = await runner.execute(makeRequest({ id: "node" }, resolvedFrom()));
   assert.equal(result.ok, true);
   const toolNames = (factory.calls[0]?.options.customTools ?? []).map((tool) => tool.name);
-  assert.ok(!toolNames.includes("workflow"), "no workflow tool");
   assert.ok(!toolNames.includes("workflow_graph"), "no graph tool");
   assert.ok(!toolNames.includes("subagent"), "no subagent tool");
   assert.ok(!toolNames.includes("agent"), "no agent tool");

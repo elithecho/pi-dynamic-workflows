@@ -1,10 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatGraphFinalAnswer, formatGraphTerminalDetails } from "../src/graph.js";
 import type { NodeExecutor } from "../src/graph-runtime.js";
-import { createWorkflowGraphTool, createWorkflowTool } from "../src/index.js";
+import { createWorkflowGraphTool } from "../src/index.js";
 
 export default function extension(pi: ExtensionAPI, options: { readonly executor?: NodeExecutor } = {}) {
-  const workflowTool = createWorkflowTool();
   const workflowGraphTool = createWorkflowGraphTool({
     executor: options.executor,
     getThinkingLevel: () => pi.getThinkingLevel(),
@@ -27,12 +26,10 @@ export default function extension(pi: ExtensionAPI, options: { readonly executor
       );
     },
   });
-  pi.registerTool(workflowTool);
   pi.registerTool(workflowGraphTool);
 
   pi.on("session_start", () => {
     const active = pi.getActiveTools();
-    const merged = [...new Set([...active, workflowTool.name, workflowGraphTool.name])];
-    if (merged.length !== active.length) pi.setActiveTools(merged);
+    if (!active.includes(workflowGraphTool.name)) pi.setActiveTools([...active, workflowGraphTool.name]);
   });
 }

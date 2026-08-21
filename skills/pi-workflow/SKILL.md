@@ -1,6 +1,6 @@
 ---
 name: pi-workflow
-description: Author and invoke multi-agent work through the declarative workflow_graph tool (graph scripts with routing, fan-out, joins, budgets) or the legacy imperative workflow tool.
+description: Author and invoke multi-agent work through the workflow_graph tool using declarative graph scripts with routing, fan-out, joins, and budgets.
 ---
 
 # Pi Workflow
@@ -9,21 +9,13 @@ description: Author and invoke multi-agent work through the declarative workflow
 
 Use `workflow_graph` when you are about to spawn multiple sub-agents and want:
 
-- A fixed topology of ≥ 3 agents with declared nodes and edges.
+- A fixed topology of agents with declared nodes and edges.
 - Conditional routing — regex predicates over a source's final text with an `otherwise` fallback.
 - Fan-out plus automatic joins at convergence points.
 - Budget enforcement — `budget({ maxConcurrency, ... })`.
 
-Use `workflow` when you need:
-
-- A sequential imperative sequence, or a topology decided at runtime by loops/conditionals.
-- Non-DSL surfaces: `phase`, `log`, `args`, `cwd`, or structured output via `opts.schema`.
-
-If unsure, prefer `workflow_graph` — declarative and deterministic.
-
-For legacy `workflow`, completion renders the bounded script result directly in the tool output;
-do not rely on a subsequent parent-model fetch. Failed or empty unstructured subagent responses
-return `null` and are marked as agent errors.
+The graph tool is declarative and deterministic: use `script` for agent-authored graphs, or
+`definition`/`graph` when a program already holds graph data.
 
 ## DSL quick reference
 

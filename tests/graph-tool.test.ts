@@ -5,7 +5,6 @@ import { formatGraphFinalAnswer, type GraphRunSnapshot, type GraphSpec } from ".
 import { GraphRunRegistry } from "../src/graph-registry.js";
 import type { NodeExecutionRequest, NodeExecutor, NodeExecutorResult } from "../src/graph-runtime.js";
 import { createWorkflowGraphTool } from "../src/graph-tool.js";
-import { createWorkflowTool } from "../src/workflow-tool.js";
 
 interface FakeUiRecordings {
   readonly setWidgetCalls: Array<{ readonly key: string; readonly content: string[] | undefined }>;
@@ -381,9 +380,6 @@ test("graph and definition pass through prepareArguments unchanged", () => {
   const definition = { nodes: [{ id: "a", prompt: "A" }], routes: [] };
   const preparedDefinition = tool.prepareArguments?.({ operation: "start", definition });
   assert.deepEqual(preparedDefinition?.definition, definition);
-
-  const legacy = createWorkflowTool();
-  assert.throws(() => legacy.prepareArguments?.({ graph: { version: 1 } }), /script. to be a string/);
 });
 
 test("graph, definition, and script are mutually exclusive for start", () => {

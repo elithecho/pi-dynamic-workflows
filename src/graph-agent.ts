@@ -13,8 +13,8 @@
  *   requires a caller-supplied schema (the frozen GraphSpec carries none),
  *   otherwise the runner fails loudly instead of producing nothing;
  * - cancellation, timeout, failures, and disposal are handled on every path;
- * - nested agent/workflow orchestration is disabled by default: the runner
- *   never registers subagent/workflow tools in child sessions.
+ * - nested orchestration is disabled by default: the runner never registers
+ *   orchestration tools in child sessions.
  */
 
 import type { Usage as AiUsage, AssistantMessage, Model, TextContent } from "@earendil-works/pi-ai";

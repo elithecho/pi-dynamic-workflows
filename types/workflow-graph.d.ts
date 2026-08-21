@@ -2,9 +2,8 @@
  * Ambient globals available inside pi-dynamic-workflows graph workflow scripts.
  *
  * Graph scripts are declarative: they declare agent nodes and routed edges that compile into a
- * frozen `GraphSpec` and run in the existing background graph runtime. This is unlike the
- * imperative legacy `workflow` scripts (`await agent(...)`, `parallel(...)`), which execute as
- * a sandboxed program — see `docs/adr/0002-graph-script-dsl.md` for the frozen grammar.
+ * frozen `GraphSpec` and run in the existing background graph runtime. See
+ * `docs/adr/0002-graph-script-dsl.md` for the frozen grammar.
  *
  * Add this to a JavaScript or TypeScript graph script file for editor IntelliSense:
  *

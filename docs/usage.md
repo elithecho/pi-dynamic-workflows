@@ -1,37 +1,13 @@
-# How an agent uses the dynamic workflows
+# How an agent uses graph workflows
 
-This guide is for an **agent** — e.g. the main Pi agent — that needs to invoke one of the two
-tools this package registers (`workflow_graph` and `workflow`) to do multi-step work. It is a
-distillation: the frozen contract lives in
-[`docs/adr/0002-graph-script-dsl.md`](adr/0002-graph-script-dsl.md) and the full design
-walkthrough in [`docs/graph-js.md`](graph-js.md). Read those for deeper detail.
+This guide is for an agent — e.g. the main Pi agent — that needs to invoke the `workflow_graph`
+tool for multi-step work. The frozen contract lives in
+[`docs/adr/0002-graph-script-dsl.md`](adr/0002-graph-script-dsl.md), with the full design history
+marked in [`docs/graph-js.md`](graph-js.md).
 
-## Overview
-
-Pick the tool by the shape of the work. `workflow_graph` is **declarative**: you author a small
-graph script — agent nodes, routed edges, budgets — that the tool compiles into a `GraphSpec`
-and runs in the background with conditional routing, fan-out, automatic joins, and budget
-enforcement. `workflow` is the **legacy imperative** tool: a plain JavaScript script
-(`await agent(...)`, `parallel(...)`, `return`) that runs to completion in a sandbox and returns
-its result to the calling turn. New work should be authored as `workflow_graph` scripts; a
-declared graph is deterministic, verifiable, and self-limiting.
-
-## Decision table
-
-| | `workflow_graph` (declarative) | `workflow` (imperative) |
-| --- | --- | --- |
-| Authoring | Declares nodes and edges; no control flow in the script | Plain JS: `await`, loops, `parallel(...)`, `pipeline(...)`, `return` |
-| Topology | Fixed up front — every edge is declared in the script | Decided at runtime by loops and conditionals |
-| Routing | Regex predicates over a source's final text, with an `otherwise` fallback | Explicit program logic |
-| Joins | Auto-inserted deterministic join nodes on convergent edges | Manual — you decide what to pass on and what to `return` |
-| Budgets | `budget({ maxConcurrency, ... })` enforced by the background runtime | Token tracker: `budget.total / spent() / remaining()` |
-| Completion | Background run; terminal state and final answer wake the parent, while intermediate artifacts stay internal | Runs to completion; the result is rendered directly in the completed tool result and returns to the calling turn |
-| Extra surfaces | None — pure AST interpretation, static arguments only | `phase`, `log`, `args`, `cwd`, `opts.schema` structured output |
-
-Use `workflow_graph` when you have ≥ 3 agents in a fixed topology and want predicate routing,
-automatic joins, and budget enforcement. Use `workflow` when you need an imperative sequence or a
-topology decided at runtime, or access to non-DSL surfaces. When unsure, prefer `workflow_graph` —
-declarative is more deterministic.
+`workflow_graph` is the sole workflow tool. Author a declarative graph script with agent nodes,
+routed edges, budgets, fan-out, and joins; the tool compiles it to a `GraphSpec` and runs it in
+the background. A declared graph is deterministic, verifiable, and self-limiting.
 
 ## workflow_graph — three input shapes
 
@@ -208,33 +184,6 @@ Join semantics: `facts`, `risks`, and `dups` all become ready after `scan` succe
 deterministic `report_join` node; the join waits for all three active sources and `report`
 receives `{ facts, risks, dups }` keyed by the active source ids. `maxConcurrency: 3` bounds the
 fan-out here; the frozen runtime default is 4 when unset.
-
-## workflow — legacy imperative
-
-The imperative tool takes a plain JS script and runs it to completion in a sandbox. Minimal
-shape:
-
-```js
-export const meta = {
-  name: 'inspect_project',
-  description: 'Inspect a repository and summarize the main modules.',
-}
-
-const inventory = await agent('Inspect the repository structure.', { label: 'repo inventory' })
-const summary = await agent('Summarize the main modules from this inventory:\n' + inventory, {
-  label: 'module summary',
-})
-
-return { inventory, summary }
-```
-
-`name` and `description` are required meta keys (optional `phases` docs an expected outline);
-`phase(...)` calls drive the live progress view at runtime, and `Esc` cancels an active run. On
-completion, the tool renders a bounded `Final result:` block directly; it does not depend on a
-later parent-model fetch. Failed or empty unstructured subagent responses become `null` branch
-results and are marked as agent errors. It still works and is the right tool for imperative
-sequences (`parallel`, `pipeline`, `opts.schema` structured output, `args`, `cwd`), but it is
-not the recommended path for new graphs — prefer `workflow_graph`.
 
 ## Picking a budget
 
