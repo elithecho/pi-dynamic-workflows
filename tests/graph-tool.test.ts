@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { formatGraphFinalAnswer, type GraphRunSnapshot, type GraphSpec } from "../src/graph.js";
+import type { GraphSessionFactory } from "../src/graph-agent.js";
 import { GraphRunRegistry } from "../src/graph-registry.js";
 import type { NodeExecutionRequest, NodeExecutor, NodeExecutorResult } from "../src/graph-runtime.js";
 import { createWorkflowGraphTool } from "../src/graph-tool.js";
+import { createWaitForWorkflowTool } from "../src/wait-for-workflow-tool.js";
 
 interface FakeUiRecordings {
   readonly setWidgetCalls: Array<{ readonly key: string; readonly content: string[] | undefined }>;
@@ -229,6 +232,221 @@ test("the tool is registered under the name workflow_graph", () => {
   const tool = createWorkflowGraphTool();
   assert.equal(tool.name, "workflow_graph");
   assert.equal(tool.label, "Workflow Graph");
+});
+
+test("wait_for_workflow takes only runId and is a terminating tool", () => {
+  const tool = createWaitForWorkflowTool({ registry: new GraphRunRegistry() });
+  assert.equal(tool.name, "wait_for_workflow");
+  assert.deepEqual(tool.prepareArguments?.({ runId: "run-1" }), { runId: "run-1" });
+  assert.throws(() => tool.prepareArguments?.({ operation: "wait", runId: "run-1" }), /runId/);
+});
+
+test("workflow_graph forwards a real runtime-authenticated provider registry to child sessions", async () => {
+  const authStorage = AuthStorage.inMemory();
+  authStorage.setRuntimeApiKey("runtime-provider", "runtime-key");
+  const modelRegistry = ModelRegistry.inMemory(authStorage);
+  modelRegistry.registerProvider("runtime-provider", {
+    api: "openai-completions",
+    apiKey: "configured-key",
+    baseUrl: "https://example.invalid/v1",
+    headers: { "x-runtime-header": "present" },
+    models: [
+      {
+        id: "runtime-model",
+        name: "Runtime Model",
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 4096,
+        maxTokens: 512,
+      },
+    ],
+  });
+  const parentModel = modelRegistry.find("runtime-provider", "runtime-model");
+  assert.ok(parentModel);
+
+  let capturedOptions: Parameters<GraphSessionFactory>[0] | undefined;
+  const sessionFactory: GraphSessionFactory = async (options) => {
+    capturedOptions = options;
+    return { messages: [], async prompt() {}, abort() {}, dispose() {} };
+  };
+  const registry = new GraphRunRegistry();
+  const workflow = createWorkflowGraphTool({ registry, sessionFactory, getThinkingLevel: () => "medium" });
+  const ctx = { ...fakeCtx(parentModel), modelRegistry } as unknown as ExtensionContext;
+  const started = await workflow.execute(
+    "start",
+    {
+      operation: "start",
+      graph: {
+        version: 1,
+        id: "runtime-auth",
+        name: "runtime-auth",
+        nodes: [{ kind: "agent", id: "node", prompt: "Use the runtime provider." }],
+        edges: [],
+      },
+    },
+    undefined,
+    undefined,
+    ctx,
+  );
+  const runId = (started.details as { result: { runId: string } }).result.runId;
+  await registry.wait(runId);
+
+  assert.equal(capturedOptions?.modelRegistry, modelRegistry);
+  assert.equal(capturedOptions?.authStorage, authStorage);
+  const childModel = capturedOptions?.model;
+  assert.ok(childModel);
+  assert.equal(childModel.provider, "runtime-provider");
+  assert.equal(childModel.id, "runtime-model");
+  assert.deepEqual(await modelRegistry.getApiKeyAndHeaders(childModel), {
+    ok: true,
+    apiKey: "runtime-key",
+    headers: { "x-runtime-header": "present" },
+  });
+});
+
+test("wait_for_workflow shares the workflow_graph registry and blocks until success", async () => {
+  const executor = new RecordingExecutor({ deferNode: "a", finalText: { a: "A", b: "B", c: "FINAL" } });
+  const registry = new GraphRunRegistry();
+  const workflow = createWorkflowGraphTool({ executor, registry, getThinkingLevel: () => "medium" });
+  const waiter = createWaitForWorkflowTool({ registry });
+  const ctx = fakeCtx();
+  const started = await workflow.execute(
+    "start",
+    { operation: "start", graph: makeChainGraph() },
+    undefined,
+    undefined,
+    ctx,
+  );
+  const runId = (started.details as { result: { runId: string } }).result.runId;
+  let settled = false;
+  const waiting = waiter.execute("wait", { runId }, undefined, undefined, ctx).then((result) => {
+    settled = true;
+    return result;
+  });
+  await tick();
+  assert.equal(settled, false);
+  executor.deferNode("a").resolve();
+  const result = await waiting;
+  assert.equal((result as { terminate?: boolean }).terminate, true);
+  const details = result.details as { result: { completed: boolean; run: GraphRunSnapshot } };
+  assert.equal(details.result.completed, true);
+  assert.equal(details.result.run.state, "succeeded");
+  assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /FINAL/);
+});
+
+test("wait_for_workflow returns failed and cancelled terminal states", async () => {
+  const failedRegistry = new GraphRunRegistry();
+  const failedWorkflow = createWorkflowGraphTool({
+    executor: {
+      async execute(request): Promise<NodeExecutorResult> {
+        return { ok: false, error: { code: "model_unavailable", nodeId: request.node.id, message: "failed" } };
+      },
+    },
+    registry: failedRegistry,
+    getThinkingLevel: () => "medium",
+  });
+  const failedWaiter = createWaitForWorkflowTool({ registry: failedRegistry });
+  const failedStart = await failedWorkflow.execute(
+    "failed-start",
+    { operation: "start", graph: makeChainGraph() },
+    undefined,
+    undefined,
+    fakeCtx(),
+  );
+  const failedRunId = (failedStart.details as { result: { runId: string } }).result.runId;
+  const failed = await failedWaiter.execute("failed-wait", { runId: failedRunId }, undefined, undefined, fakeCtx());
+  assert.equal((failed.details as { result: { run: GraphRunSnapshot } }).result.run.state, "failed");
+  assert.equal((failed as { terminate?: boolean }).terminate, true);
+
+  const cancelledRegistry = new GraphRunRegistry();
+  const cancelledExecutor = new RecordingExecutor({ deferNode: "a" });
+  const cancelledWorkflow = createWorkflowGraphTool({
+    executor: cancelledExecutor,
+    registry: cancelledRegistry,
+    getThinkingLevel: () => "medium",
+  });
+  const cancelledWaiter = createWaitForWorkflowTool({ registry: cancelledRegistry });
+  const cancelledStart = await cancelledWorkflow.execute(
+    "cancel-start",
+    { operation: "start", graph: makeChainGraph() },
+    undefined,
+    undefined,
+    fakeCtx(),
+  );
+  const cancelledRunId = (cancelledStart.details as { result: { runId: string } }).result.runId;
+  const waiting = cancelledWaiter.execute("cancel-wait", { runId: cancelledRunId }, undefined, undefined, fakeCtx());
+  await tick();
+  await cancelledWorkflow.execute(
+    "cancel",
+    { operation: "cancel", runId: cancelledRunId },
+    undefined,
+    undefined,
+    fakeCtx(),
+  );
+  const cancelled = await waiting;
+  assert.equal((cancelled.details as { result: { run: GraphRunSnapshot } }).result.run.state, "cancelled");
+});
+
+test("wait_for_workflow handles unknown, already-terminal, and caller-aborted waits", async () => {
+  const registry = new GraphRunRegistry();
+  const workflow = createWorkflowGraphTool({
+    executor: new RecordingExecutor({ finalText: { a: "A", b: "B", c: "C" } }),
+    registry,
+    getThinkingLevel: () => "medium",
+  });
+  const waiter = createWaitForWorkflowTool({ registry });
+  await assert.rejects(
+    waiter.execute("missing", { runId: "missing" }, undefined, undefined, fakeCtx()),
+    /run_not_found/,
+  );
+
+  const started = await workflow.execute(
+    "start",
+    { operation: "start", graph: makeChainGraph() },
+    undefined,
+    undefined,
+    fakeCtx(),
+  );
+  const runId = (started.details as { result: { runId: string } }).result.runId;
+  await workflow.execute("wait", { operation: "wait", runId }, undefined, undefined, fakeCtx());
+  const terminal = await waiter.execute("terminal", { runId }, undefined, undefined, fakeCtx());
+  assert.equal((terminal.details as { result: { run: GraphRunSnapshot } }).result.run.state, "succeeded");
+
+  const deferredRegistry = new GraphRunRegistry();
+  const deferredWorkflow = createWorkflowGraphTool({
+    executor: new RecordingExecutor({ deferNode: "a" }),
+    registry: deferredRegistry,
+    getThinkingLevel: () => "medium",
+  });
+  const deferredWaiter = createWaitForWorkflowTool({ registry: deferredRegistry });
+  const deferredStart = await deferredWorkflow.execute(
+    "deferred-start",
+    { operation: "start", graph: makeChainGraph() },
+    undefined,
+    undefined,
+    fakeCtx(),
+  );
+  const deferredRunId = (deferredStart.details as { result: { runId: string } }).result.runId;
+  const controller = new AbortController();
+  const aborted = deferredWaiter.execute("aborted", { runId: deferredRunId }, controller.signal, undefined, fakeCtx());
+  controller.abort();
+  await assert.rejects(aborted, /Operation aborted/);
+  const status = await deferredWorkflow.execute(
+    "status",
+    { operation: "status", runId: deferredRunId },
+    undefined,
+    undefined,
+    fakeCtx(),
+  );
+  assert.equal((status.details as { result: { run: GraphRunSnapshot } }).result.run.state, "running");
+  await deferredWorkflow.execute(
+    "cancel",
+    { operation: "cancel", runId: deferredRunId },
+    undefined,
+    undefined,
+    fakeCtx(),
+  );
 });
 
 test("start returns before completion with a runId while nodes stay pending", async () => {

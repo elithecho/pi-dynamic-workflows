@@ -25,7 +25,7 @@ Or load directly for development:
 pi -e ./src/index.ts
 ```
 
-Then in Pi, run `/reload`. The extension registers and activates the `workflow_graph` tool.
+Then in Pi, run `/reload`. The extension registers and activates the `workflow_graph` and `wait_for_workflow` tools.
 
 ## Skill
 
@@ -84,11 +84,16 @@ workflow_graph { operation: "start", script: "<graph script>" } → runId
 workflow_graph { operation: "status", runId }                  → run state
 workflow_graph { operation: "wait", runId, timeoutMs? }        → run state/final answer
 workflow_graph { operation: "cancel", runId, reason? }         → cancellation result
+wait_for_workflow { runId }                                    → terminal run state/final answer
 ```
 
 `start` returns immediately while the graph runs in the background. Progress appears in the
 `workflow_graph` widget. A terminal follow-up wakes the parent once with the canonical final
-answer from successful sinks; intermediate artifacts remain inside the graph runtime.
+answer from successful sinks; intermediate artifacts remain inside the graph runtime. Use
+`wait_for_workflow { runId }` when the parent should block until completion; it claims a still-running
+run, returns the same bounded terminal result as `workflow_graph wait`, and ends the parent turn
+without an additional model response. Both tools share one process-local registry per extension
+runtime. Aborting the wait only aborts that caller's wait, not the graph.
 
 ### DSL rules
 
@@ -127,6 +132,7 @@ available to graph nodes through the shared `structured-output` module.
 | --- | --- |
 | `src/graph.ts` | Graph contract, validation, routes, artifacts, and final answers. |
 | `src/graph-tool.ts` | The Pi `workflow_graph` tool and its DSL guidance. |
+| `src/wait-for-workflow-tool.ts` | The bounded terminal `wait_for_workflow` tool. |
 | `src/graph-agent.ts` | Direct Pi child-session execution for graph nodes. |
 | `src/graph-runtime.ts` | Background graph scheduler and execution state. |
 | `src/graph-definition.ts` | JSON graph-definition compiler. |

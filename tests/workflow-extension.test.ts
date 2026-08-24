@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import extension from "../extensions/workflow.js";
-import type { GraphSpec } from "../src/graph.js";
+import type { GraphRunSnapshot, GraphSpec } from "../src/graph.js";
 import type { NodeExecutor } from "../src/graph-runtime.js";
 import type { createWorkflowGraphTool } from "../src/graph-tool.js";
+import type { createWaitForWorkflowTool } from "../src/wait-for-workflow-tool.js";
 
 interface SentMessage {
   readonly message: {
@@ -40,6 +41,19 @@ function fakeContext(): ExtensionContext {
   } as unknown as ExtensionContext;
 }
 
+interface Deferred {
+  readonly promise: Promise<void>;
+  resolve(): void;
+}
+
+function deferred(): Deferred {
+  let resolve!: () => void;
+  const promise = new Promise<void>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 function graph(): GraphSpec {
   return {
     version: 1,
@@ -54,6 +68,7 @@ function graph(): GraphSpec {
 }
 
 type WorkflowGraphTool = ReturnType<typeof createWorkflowGraphTool>;
+type WaitForWorkflowTool = ReturnType<typeof createWaitForWorkflowTool>;
 
 function isWorkflowGraphTool(value: unknown): value is WorkflowGraphTool {
   return (
@@ -64,8 +79,18 @@ function isWorkflowGraphTool(value: unknown): value is WorkflowGraphTool {
   );
 }
 
+function isWaitForWorkflowTool(value: unknown): value is WaitForWorkflowTool {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { name?: unknown }).name === "wait_for_workflow" &&
+    typeof (value as { execute?: unknown }).execute === "function"
+  );
+}
+
 function installExtension(executor: NodeExecutor): {
   readonly tool: WorkflowGraphTool;
+  readonly waitTool: WaitForWorkflowTool;
   readonly sent: SentMessage[];
   readonly registeredToolNames: string[];
   readonly activationCalls: string[][];
@@ -95,12 +120,15 @@ function installExtension(executor: NodeExecutor): {
   } as unknown as ExtensionAPI;
   extension(pi, { executor });
   const tool = tools.find(isWorkflowGraphTool);
+  const waitTool = tools.find(isWaitForWorkflowTool);
   assert.ok(tool, "workflow_graph was registered");
+  assert.ok(waitTool, "wait_for_workflow was registered");
   const registeredToolNames = tools.map((value) => (value as { name: string }).name);
-  assert.deepEqual(registeredToolNames, ["workflow_graph"]);
+  assert.deepEqual(registeredToolNames, ["workflow_graph", "wait_for_workflow"]);
   assert.ok(sessionStartHandler, "session_start handler was registered");
   return {
     tool,
+    waitTool,
     sent,
     registeredToolNames,
     activationCalls,
@@ -116,9 +144,167 @@ test("extension registers and activates only workflow_graph", () => {
       return { ok: true, output: { finalText: "done" } };
     },
   });
-  assert.deepEqual(installed.registeredToolNames, ["workflow_graph"]);
+  assert.deepEqual(installed.registeredToolNames, ["workflow_graph", "wait_for_workflow"]);
   installed.activateSessionStart();
-  assert.deepEqual(installed.activationCalls, [["existing_tool", "workflow_graph"]]);
+  assert.deepEqual(installed.activationCalls, [["existing_tool", "workflow_graph", "wait_for_workflow"]]);
+});
+
+test("wait_for_workflow blocks, terminates the turn, and suppresses the duplicate relay", async () => {
+  const gate = deferred();
+  const { tool, waitTool, sent } = installExtension({
+    async execute(request) {
+      await gate.promise;
+      return { ok: true, output: { finalText: request.node.id === "final" ? "CANONICAL" : "INTERMEDIATE" } };
+    },
+  });
+  const started = await tool.execute(
+    "call-1",
+    { operation: "start", graph: graph() },
+    undefined,
+    undefined,
+    fakeContext(),
+  );
+  const runId = (started.details as { result: { runId: string } }).result.runId;
+  let settled = false;
+  const waiting = waitTool.execute("call-2", { runId }, undefined, undefined, fakeContext()).then((result) => {
+    settled = true;
+    return result;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(settled, false);
+
+  gate.resolve();
+  const result = await waiting;
+  assert.equal((result as { terminate?: boolean }).terminate, true);
+  assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /CANONICAL/);
+  assert.equal(sent.length, 0);
+});
+
+test("pre-aborted wait_for_workflow never claims and natural completion relays once", async () => {
+  const gate = deferred();
+  const { tool, waitTool, sent } = installExtension({
+    async execute(request) {
+      await gate.promise;
+      return { ok: true, output: { finalText: request.node.id === "final" ? "CANONICAL" : "INTERMEDIATE" } };
+    },
+  });
+  const started = await tool.execute(
+    "call-1",
+    { operation: "start", graph: graph() },
+    undefined,
+    undefined,
+    fakeContext(),
+  );
+  const runId = (started.details as { result: { runId: string } }).result.runId;
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    waitTool.execute("call-2", { runId }, controller.signal, undefined, fakeContext()),
+    /Operation aborted/,
+  );
+
+  gate.resolve();
+  await tool.execute("call-3", { operation: "wait", runId }, undefined, undefined, fakeContext());
+  assert.equal(sent.length, 1);
+  assert.match(sent[0]?.message.content ?? "", /CANONICAL/);
+});
+
+test("mid-wait abort releases its claim before natural success and relays once", async () => {
+  const gate = deferred();
+  const { tool, waitTool, sent } = installExtension({
+    async execute(request) {
+      await gate.promise;
+      return { ok: true, output: { finalText: request.node.id === "final" ? "CANONICAL" : "INTERMEDIATE" } };
+    },
+  });
+  const started = await tool.execute(
+    "call-1",
+    { operation: "start", graph: graph() },
+    undefined,
+    undefined,
+    fakeContext(),
+  );
+  const runId = (started.details as { result: { runId: string } }).result.runId;
+  const controller = new AbortController();
+  const waiting = waitTool.execute("call-2", { runId }, controller.signal, undefined, fakeContext());
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  controller.abort();
+  await assert.rejects(waiting, /Operation aborted/);
+
+  gate.resolve();
+  await tool.execute("call-3", { operation: "wait", runId }, undefined, undefined, fakeContext());
+  assert.equal(sent.length, 1);
+  assert.match(sent[0]?.message.content ?? "", /CANONICAL/);
+});
+
+test("concurrent wait claims survive one waiter aborting", async () => {
+  const gate = deferred();
+  const { tool, waitTool, sent } = installExtension({
+    async execute(request) {
+      await gate.promise;
+      return { ok: true, output: { finalText: request.node.id === "final" ? "CANONICAL" : "INTERMEDIATE" } };
+    },
+  });
+  const started = await tool.execute(
+    "call-1",
+    { operation: "start", graph: graph() },
+    undefined,
+    undefined,
+    fakeContext(),
+  );
+  const runId = (started.details as { result: { runId: string } }).result.runId;
+  const firstController = new AbortController();
+  const first = waitTool.execute("call-2", { runId }, firstController.signal, undefined, fakeContext());
+  const second = waitTool.execute("call-3", { runId }, undefined, undefined, fakeContext());
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  firstController.abort();
+  await assert.rejects(first, /Operation aborted/);
+
+  gate.resolve();
+  const result = await second;
+  assert.equal((result.details as { result: { run: GraphRunSnapshot } }).result.run.state, "succeeded");
+  assert.equal(sent.length, 0, "the surviving waiter suppresses the automatic relay");
+});
+
+test("terminal completion wins an abort race without a duplicate relay", async () => {
+  const { tool, waitTool, sent } = installExtension({
+    async execute(request) {
+      return { ok: true, output: { finalText: request.node.id === "final" ? "CANONICAL" : "INTERMEDIATE" } };
+    },
+  });
+  const started = await tool.execute(
+    "call-1",
+    { operation: "start", graph: graph() },
+    undefined,
+    undefined,
+    fakeContext(),
+  );
+  const runId = (started.details as { result: { runId: string } }).result.runId;
+  const controller = new AbortController();
+  const waiting = waitTool.execute("call-2", { runId }, controller.signal, undefined, fakeContext());
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const result = await waiting;
+  controller.abort();
+  assert.equal((result.details as { result: { run: GraphRunSnapshot } }).result.run.state, "succeeded");
+  assert.equal(sent.length, 0);
+});
+
+test("extension preserves the automatic relay when no waiter claims the run", async () => {
+  const { tool, sent } = installExtension({
+    async execute(request) {
+      return { ok: true, output: { finalText: request.node.id === "final" ? "CANONICAL" : "INTERMEDIATE" } };
+    },
+  });
+  const started = await tool.execute(
+    "call-1",
+    { operation: "start", graph: graph() },
+    undefined,
+    undefined,
+    fakeContext(),
+  );
+  const runId = (started.details as { result: { runId: string } }).result.runId;
+  await tool.execute("call-2", { operation: "wait", runId }, undefined, undefined, fakeContext());
+  assert.equal(sent.length, 1);
 });
 
 test("extension relays exactly one terminal success with only the canonical answer", async () => {

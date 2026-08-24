@@ -93,10 +93,19 @@ waits for all three sources and `report` receives `{ facts, risks, dups }`.
 - `status` / `wait` — observe with the `runId` (`wait` takes optional `timeoutMs`).
 - `cancel` — stop with the `runId` (optional reason: `requested` | `parent_aborted` | `timeout` |
   `budget_exhausted`).
+- `wait_for_workflow { runId }` — wait indefinitely for that run to reach a terminal state. It
+  returns the terminal result and uses `terminate: true` so the parent turn ends without another
+  model response. It shares the same process-local registry as `workflow_graph`; it is the preferred
+  replacement for polling with `status`/`wait` when the parent wants to wait for terminal completion.
+  Aborting the tool wait does not cancel the graph: a pre-aborted wait claims nothing, and a waiter
+  aborted mid-wait releases its relay claim so natural completion still emits the normal automatic
+  follow-up. A successful terminal wait suppresses that duplicate follow-up. Concurrent waiters own
+  independent claims, and terminal-versus-abort races resolve once without losing the normal wake-up.
 
 Completion surfaces through the `workflow_graph` UI widget and a single terminal follow-up that
 wakes the parent turn with the canonical final answer. Intermediate node artifacts remain direct
-graph inputs and are not relayed. Use `status`/`wait` when you need to inspect a run explicitly.
+graph inputs and are not relayed. Use `status`/`wait` when you need to inspect a run explicitly;
+use `wait_for_workflow` when the parent should block until completion.
 
 ## Failure modes
 

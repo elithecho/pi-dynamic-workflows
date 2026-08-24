@@ -13,6 +13,7 @@ import {
   GraphContractError,
   type GraphLifecycleEvent,
   type GraphOperationError,
+  type GraphOperationResult,
   type GraphRunSnapshot,
   type GraphStartOperationResult,
   type GraphStatusOperationResult,
@@ -30,9 +31,20 @@ export interface GraphRunRegistryStartOptions {
   readonly onEvent?: (event: GraphLifecycleEvent) => void;
 }
 
+export type GraphWaitClaimResult =
+  | {
+      readonly claimed: true;
+      /** Opaque ownership token for this wait claim. */
+      readonly claimId: string;
+    }
+  | { readonly claimed: false };
+
 /** Process-local registry of graph runs, keyed by run id. */
 export class GraphRunRegistry {
   private readonly runs = new Map<string, GraphRunHandle>();
+  /** Active wait claims, grouped by run so concurrent waiters own independent claims. */
+  private readonly waitClaims = new Map<string, Set<string>>();
+  private waitClaimCounter = 0;
 
   has(runId: string): boolean {
     return this.runs.has(runId);
@@ -82,10 +94,80 @@ export class GraphRunRegistry {
     return { ok: true, result: { run: handle.snapshot() } };
   }
 
-  async wait(runId: string, timeoutMs?: number): Promise<GraphWaitOperationResult> {
+  /**
+   * Claim a still-running run for wait_for_workflow. The signal is checked in
+   * the same synchronous section as the claim, so a pre-aborted waiter never
+   * suppresses a later terminal relay. Each claim has independent ownership so
+   * one aborted concurrent waiter cannot release another waiter's claim.
+   */
+  claimWait(runId: string, signal?: AbortSignal): GraphOperationResult<GraphWaitClaimResult> {
     const handle = this.runs.get(runId);
     if (handle === undefined) return this.runNotFound(runId);
-    return { ok: true, result: await handle.wait(timeoutMs) };
+    if (signal?.aborted || isTerminalState(handle.snapshot().state)) {
+      return { ok: true, result: { claimed: false } };
+    }
+    this.waitClaimCounter += 1;
+    const claimId = `wait-${this.waitClaimCounter}`;
+    const claims = this.waitClaims.get(runId) ?? new Set<string>();
+    claims.add(claimId);
+    this.waitClaims.set(runId, claims);
+    return { ok: true, result: { claimed: true, claimId } };
+  }
+
+  /** Release one waiter's suppression claim. Releasing an absent claim is safe. */
+  releaseWaitClaim(runId: string, claimId: string): void {
+    const claims = this.waitClaims.get(runId);
+    if (claims === undefined) return;
+    claims.delete(claimId);
+    if (claims.size === 0) this.waitClaims.delete(runId);
+  }
+
+  /** Consume all active claims for one terminal relay, suppressing that relay once. */
+  consumeTerminalRelaySuppression(runId: string): boolean {
+    return this.waitClaims.delete(runId);
+  }
+
+  async wait(
+    runId: string,
+    timeoutMs?: number,
+    signal?: AbortSignal,
+    claimId?: string,
+  ): Promise<GraphWaitOperationResult> {
+    const handle = this.runs.get(runId);
+    if (handle === undefined) return this.runNotFound(runId);
+    const releaseClaim = () => {
+      if (claimId !== undefined) this.releaseWaitClaim(runId, claimId);
+    };
+    if (signal?.aborted) {
+      releaseClaim();
+      throw new Error("Operation aborted");
+    }
+
+    let removeAbortListener: (() => void) | undefined;
+    const aborted = new Promise<Awaited<ReturnType<GraphRunHandle["wait"]>>>((resolve, reject) => {
+      if (signal === undefined) return;
+      const onAbort = () => {
+        // Release synchronously before rejecting. A terminal event queued by
+        // the same abort turn must see that ownership is gone and relay.
+        releaseClaim();
+        if (isTerminalState(handle.snapshot().state)) {
+          resolve({ run: handle.snapshot(), completed: true });
+        } else {
+          reject(new Error("Operation aborted"));
+        }
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+    });
+    try {
+      const result = await (signal === undefined
+        ? handle.wait(timeoutMs)
+        : Promise.race([handle.wait(timeoutMs), aborted]));
+      return { ok: true, result };
+    } finally {
+      removeAbortListener?.();
+      releaseClaim();
+    }
   }
 
   cancel(runId: string, reason: CancellationReason = "requested"): GraphCancelOperationResult {
@@ -97,4 +179,8 @@ export class GraphRunRegistry {
   private runNotFound(runId: string): GraphOperationError {
     return { ok: false, error: { code: "run_not_found", message: `run ${runId} not found` } };
   }
+}
+
+function isTerminalState(state: GraphRunSnapshot["state"]): boolean {
+  return state === "succeeded" || state === "failed" || state === "cancelled";
 }

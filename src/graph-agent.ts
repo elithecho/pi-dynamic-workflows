@@ -23,6 +23,7 @@ import {
   createAgentSession,
   createCodingTools,
   getAgentDir,
+  type ModelRegistry,
   SessionManager,
   SettingsManager,
   type ToolDefinition,
@@ -114,6 +115,8 @@ export interface GraphAgentRunnerOptions {
   cwd?: string;
   /** Model registry used to resolve the frozen `ModelSelector` to a session Model. Required. */
   modelRegistry: GraphModelRegistryLike;
+  /** Host SDK registry to reuse for child authentication and provider configuration. */
+  sessionModelRegistry?: ModelRegistry;
   /** Base tools for child sessions. Default: `createCodingTools(cwd)`. Workflow/subagent tools are never auto-added. */
   tools?: ToolDefinition[];
   /** Per-node structured-output schemas, required when a node declares `outputs: ["structuredOutput"]`. */
@@ -134,6 +137,7 @@ export class GraphAgentRunner implements NodeExecutor {
   private readonly cwd: string;
   private readonly baseTools: ToolDefinition[];
   private readonly modelRegistry: GraphModelRegistryLike;
+  private readonly sessionModelRegistry?: ModelRegistry;
   private readonly structuredOutputSchemas: Readonly<Record<string, TSchema>>;
   private readonly timeoutMs?: number;
   private readonly sessionFactory: GraphSessionFactory;
@@ -142,6 +146,7 @@ export class GraphAgentRunner implements NodeExecutor {
     this.cwd = options.cwd ?? process.cwd();
     this.baseTools = options.tools ?? createCodingTools(this.cwd);
     this.modelRegistry = options.modelRegistry;
+    this.sessionModelRegistry = options.sessionModelRegistry;
     this.structuredOutputSchemas = options.structuredOutputSchemas ?? {};
     this.timeoutMs = options.timeoutMs;
     this.sessionFactory = options.sessionFactory ?? this.defaultSessionFactory;
@@ -193,6 +198,14 @@ export class GraphAgentRunner implements NodeExecutor {
       customTools,
       model,
       thinkingLevel: resolvedContext.thinking,
+      ...(this.sessionModelRegistry === undefined
+        ? {}
+        : {
+            // Reuse the host registry and its auth storage. The SDK otherwise
+            // creates fresh instances, which loses runtime provider credentials.
+            modelRegistry: this.sessionModelRegistry,
+            authStorage: this.sessionModelRegistry.authStorage,
+          }),
     };
     let session: GraphSession;
     let abortTimer: ReturnType<typeof setTimeout> | undefined;

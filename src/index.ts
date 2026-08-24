@@ -24,7 +24,7 @@ export type { GraphDefinition, GraphDefinitionNode, GraphDefinitionRoute } from 
 export { compileGraphDefinition } from "./graph-definition.js";
 export type { GraphDisplay, GraphDisplayOptions } from "./graph-display.js";
 export { createWidgetGraphDisplay, renderGraphSnapshotLines, renderGraphSnapshotText } from "./graph-display.js";
-export type { GraphRunRegistryStartOptions } from "./graph-registry.js";
+export type { GraphRunRegistryStartOptions, GraphWaitClaimResult } from "./graph-registry.js";
 export { GraphRunRegistry } from "./graph-registry.js";
 export { compileGraphScript, GraphScriptError } from "./graph-script.js";
 export type { WorkflowGraphToolInput, WorkflowGraphToolOptions } from "./graph-tool.js";
@@ -37,3 +37,5 @@ export {
 } from "./staged-workflow.js";
 export type { StructuredOutputCapture, StructuredOutputToolOptions } from "./structured-output.js";
 export { createStructuredOutputTool } from "./structured-output.js";
+export type { WaitForWorkflowToolInput, WaitForWorkflowToolOptions } from "./wait-for-workflow-tool.js";
+export { createWaitForWorkflowTool } from "./wait-for-workflow-tool.js";

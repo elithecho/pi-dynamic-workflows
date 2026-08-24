@@ -9,12 +9,11 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { CreateAgentSessionOptions } from "@earendil-works/pi-coding-agent";
+import type { AuthStorage, CreateAgentSessionOptions, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
   type AgentMessageLike,
   GraphAgentRunner,
-  type GraphModelRegistryLike,
   type GraphSession,
   type GraphSessionFactory,
   lastAssistantText,
@@ -42,7 +41,7 @@ const registry = {
   find(provider: string, modelId: string) {
     return models[`${provider}/${modelId}`];
   },
-} as unknown as GraphModelRegistryLike;
+} as unknown as ModelRegistry;
 
 interface FakeSessionOptions {
   /** Message history presented to the runner after prompt resolves. */
@@ -179,6 +178,24 @@ test("omitted model/thinking inherit the invoking parent context", async () => {
   const options = factory.calls[0]?.options;
   assert.equal(options?.model, models["test/parent-model"], "parent model inherited");
   assert.equal(options?.thinkingLevel, "medium", "parent thinking inherited");
+});
+
+test("child sessions preserve the host registry and its authenticated storage", async () => {
+  const hostAuthStorage = {} as AuthStorage;
+  const hostRegistry = { ...registry, authStorage: hostAuthStorage } as unknown as ModelRegistry;
+  const factory = new FakeSessionFactory(() => ({
+    messages: [message("assistant", [{ type: "text", text: "done" }])],
+  }));
+  const runner = new GraphAgentRunner({
+    modelRegistry: hostRegistry,
+    sessionModelRegistry: hostRegistry,
+    sessionFactory: factory.factoryImpl,
+  });
+  const result = await runner.execute(makeRequest({ id: "node" }, resolvedFrom()));
+  assert.equal(result.ok, true);
+  const options = factory.calls[0]?.options;
+  assert.equal(options?.modelRegistry, hostRegistry);
+  assert.equal(options?.authStorage, hostAuthStorage);
 });
 
 test("node override beats role, workflow, and parent at the runner boundary", async () => {

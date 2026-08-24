@@ -131,6 +131,7 @@ export function createWorkflowGraphTool(
             new GraphAgentRunner({
               cwd: options?.cwd ?? ctx.cwd,
               modelRegistry: ctx.modelRegistry,
+              sessionModelRegistry: ctx.modelRegistry,
               structuredOutputSchemas: {},
               timeoutMs: options?.timeoutMs,
               sessionFactory: options?.sessionFactory,
@@ -141,11 +142,15 @@ export function createWorkflowGraphTool(
             modelRegistry: ctx.modelRegistry,
             onEvent: (event: GraphLifecycleEvent) => {
               if (event.type === "run_completed" || event.type === "run_failed" || event.type === "run_cancelled") {
+                // Reserve terminal ownership before invoking UI hooks, which may synchronously
+                // trigger an abort. This makes terminal-vs-abort ordering deterministic.
+                const suppressRelay = registry.consumeTerminalRelaySuppression(event.runId);
                 try {
                   display.complete(event.snapshot);
                 } catch {
                   // Display failures must not affect graph execution or completion relay.
                 }
+                if (suppressRelay) return;
                 try {
                   void Promise.resolve(options.onTerminalCompletion?.(event.snapshot)).catch(() => {
                     // Completion relay failures must not affect graph execution.

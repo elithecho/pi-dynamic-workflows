@@ -10,6 +10,7 @@ const packageJson = JSON.parse(await readFile(new URL("../package.json", import.
 
 test("built root exports preserve graph APIs and remove imperative APIs", () => {
   assert.equal(typeof root.createWorkflowGraphTool, "function");
+  assert.equal(typeof root.createWaitForWorkflowTool, "function");
   assert.equal(typeof root.createStructuredOutputTool, "function");
   assert.equal("createWorkflowTool" in root, false);
   assert.equal("runWorkflow" in root, false);

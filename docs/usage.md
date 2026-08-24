@@ -86,8 +86,15 @@ compilation. It is the most verbose surface and not recommended for agent author
 - **`status`** / **`wait`** / **`cancel`** all take the `runId` (plus optional `timeoutMs` for
   `wait` and an optional `reason` — `requested` | `parent_aborted` | `timeout` |
   `budget_exhausted` — for `cancel`).
+- **`wait_for_workflow`** takes only `runId` and waits indefinitely for a terminal state. It claims a
+  still-running run, returns the same bounded terminal result and canonical final-answer presentation
+  as `workflow_graph wait`, and returns `terminate: true` so the parent turn ends without another
+  model response. Aborting this tool's wait does not cancel the graph. If the run is already terminal,
+  it safely returns its snapshot without claiming it; the automatic terminal relay may already have
+  occurred in that race.
 - Progress surfaces through the `workflow_graph` UI widget. When the run reaches a terminal state,
-  the extension sends one custom follow-up that wakes the parent; successful runs include only the
+  the extension sends one custom follow-up that wakes the parent unless `wait_for_workflow` claimed
+  the run first; successful runs include only the
   canonical final answer from their successful topology sink(s). Intermediate node artifacts
   are never relayed.
 
@@ -109,6 +116,7 @@ workflow_graph { operation: "start", graph: { version: 1, ... } }     → runId,
 workflow_graph { operation: "status", runId }                         → run state + skipped/failed counts
 workflow_graph { operation: "wait", runId, timeoutMs? }               → run state or "still running"; completed success includes final answer
 workflow_graph { operation: "cancel", runId, reason? }                → "cancel accepted" or "not accepted"
+wait_for_workflow { runId }                                           → terminal run state + final answer; terminates the turn
 ```
 
 `start` inputs are mutually exclusive — pass exactly one of `script`, `definition`, or `graph`.
