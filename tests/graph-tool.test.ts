@@ -776,8 +776,21 @@ test("wait exposes only the canonical terminal answer and invokes completion onc
   );
   const runId = (started.details as { result: { runId: string } }).result.runId;
   const startText = started.content[0].type === "text" ? started.content[0].text : "";
-  assert.match(startText, /^Started workflow_graph run run-\d+ \(state running\)\./);
+  assert.match(startText, /^workflow_graph run run-\d+ running/);
+  assert.match(startText, /◆ workflow_graph: chain/);
+  assert.match(startText, /a \[(?:pending|running)\]/);
   assert.doesNotMatch(startText, /SECRET/);
+  const startDetails = started.details as { result: { run: GraphRunSnapshot } };
+  assert.equal(startDetails.result.run.state, "running");
+  assert.equal(startDetails.result.run.turnCount, 0);
+  const renderedStart = tool.renderResult?.(
+    started as never,
+    { expanded: false, isPartial: false },
+    { fg: (_color: string, text: string) => text, bold: (text: string) => text } as never,
+    {} as never,
+  );
+  assert.match(renderedStart?.render(120).join("\n") ?? "", /◆ workflow_graph: chain/);
+  assert.match(renderedStart?.render(120).join("\n") ?? "", /turns 0/);
 
   const waited = await tool.execute("call-2", { operation: "wait", runId }, undefined, undefined, ctx);
   const waitDetails = waited.details as { result: { completed: boolean; run: GraphRunSnapshot } };

@@ -411,6 +411,82 @@ test("failure with retries: maxAttempts honored, waiting_retry observable, depen
   assert.equal(sawWaiting, true, "waiting_retry was observable between attempts");
 });
 
+test("turn count is aggregate, monotonic, and includes retries", async () => {
+  const graph: GraphSpec = {
+    version: 1,
+    id: "turns",
+    name: "turns",
+    nodes: [{ kind: "agent", id: "flaky", prompt: "flaky", retry: { maxAttempts: 2 } }],
+    edges: [],
+  };
+  let attempts = 0;
+  const turnCounts: number[] = [];
+  const snapshot = await runGraph(graph, {
+    parentContext: parent,
+    onEvent: (event) => {
+      if (event.type === "turn_started") turnCounts.push(event.turnCount);
+    },
+    executor: {
+      async execute(request): Promise<NodeExecutorResult> {
+        request.onTurnStart?.();
+        attempts += 1;
+        if (attempts === 1) return { ok: false, error: { code: "invalid_state", message: "retry" } };
+        request.onTurnStart?.();
+        return { ok: true, output: { finalText: "done" } };
+      },
+    },
+  });
+  assert.equal(snapshot.state, "succeeded");
+  assert.equal(snapshot.turnCount, 3);
+  assert.deepEqual(turnCounts, [1, 2, 3]);
+});
+
+test("monotonic elapsed time starts at runtime start and freezes at terminal", async () => {
+  const graph: GraphSpec = {
+    version: 1,
+    id: "elapsed",
+    name: "elapsed",
+    nodes: [{ kind: "agent", id: "a", prompt: "a" }],
+    edges: [],
+  };
+  let now = 1_000;
+  let monotonicNow = 0;
+  let finish!: () => void;
+  const handle = startGraphRun(graph, {
+    parentContext: parent,
+    now: () => now,
+    monotonicNow: () => monotonicNow,
+    executor: {
+      async execute() {
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        return { ok: true, output: { finalText: "done" } };
+      },
+    },
+  });
+  await waitUntilNodeState(handle, "a", "running");
+  assert.equal(handle.snapshot().startedAtEpochMs, 1_000);
+  monotonicNow = 1_500;
+  now = 2_500;
+  assert.equal(handle.snapshot().elapsedMs, 1_500);
+  monotonicNow = 1_600;
+  now = 500;
+  assert.equal(handle.snapshot().elapsedMs, 1_600, "elapsed snapshots retain their high-water mark");
+  monotonicNow = 4_000;
+  now = 5_000;
+  assert.equal(handle.snapshot().elapsedMs, 4_000);
+  monotonicNow = 4_500;
+  now = 500;
+  finish();
+  const terminal = await handle.done;
+  assert.equal(terminal.elapsedMs, 4_500, "terminal elapsed follows the later monotonic instant");
+  monotonicNow = 9_000;
+  now = 9_000;
+  assert.equal(handle.snapshot().elapsedMs, 4_500);
+  assert.equal(terminal.elapsedMs >= 0, true);
+});
+
 test("retry recovers on a later attempt and the run succeeds", async () => {
   const graph: GraphSpec = {
     version: 1,

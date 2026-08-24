@@ -234,6 +234,9 @@ test("lifecycle and cancellation contracts remain serializable", () => {
   const snapshot = {
     runId: "run-1",
     graphId: "graph-1",
+    startedAtEpochMs: 1_000,
+    elapsedMs: 0,
+    turnCount: 0,
     state: "cancelled" as const,
     cancellation: { requested: true, reason: "requested" as const },
     nodes: [],

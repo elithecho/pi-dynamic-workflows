@@ -44,6 +44,7 @@
  * nodes are drained (not aborted); dependents are skipped `dependency_failed`.
  */
 
+import { performance } from "node:perf_hooks";
 import {
   type AgentNode,
   type Artifact,
@@ -107,6 +108,8 @@ export interface NodeExecutionRequest {
   readonly parentContext: InvokingParentExecutionContext;
   /** Aborts when the run is cancelled; shared across retry attempts. */
   readonly signal: AbortSignal;
+  /** Called once for each SDK `turn_start` event from this child session. */
+  readonly onTurnStart?: () => void;
 }
 
 export type NodeExecutorResult =
@@ -125,6 +128,10 @@ export interface NodeExecutor {
 export interface GraphRunOptions {
   readonly executor: NodeExecutor;
   readonly parentContext: InvokingParentExecutionContext;
+  /** Epoch-millisecond wall clock used for serializable run-start metadata. */
+  readonly now?: () => number;
+  /** Monotonic clock used exclusively for elapsed duration. */
+  readonly monotonicNow?: () => number;
   /** When provided, the graph is preflighted against this registry before start. */
   readonly modelRegistry?: ModelRegistryLike;
   /** Explicit run id; generated when omitted. */
@@ -232,6 +239,8 @@ class GraphRunEngine implements GraphRunHandle {
   private readonly options: GraphRunOptions;
   private readonly executor: NodeExecutor;
   private readonly parentContext: InvokingParentExecutionContext;
+  private readonly now: () => number;
+  private readonly monotonicNow: () => number;
   private readonly maxConcurrency: number;
   private readonly runtimes: readonly NodeRuntime[];
   private readonly runtimeById: Map<string, NodeRuntime>;
@@ -252,6 +261,11 @@ class GraphRunEngine implements GraphRunHandle {
     costDefined: false,
   };
   private runState: RunState = "created";
+  private startedAtEpochMs!: number;
+  private startedAtMonotonicMs!: number;
+  /** High-water monotonic duration, retained for running snapshots and terminal freeze. */
+  private elapsedMs = 0;
+  private turnCount = 0;
   private runError?: GraphError;
   private cancellation?: Cancellation;
   private cancelRequested = false;
@@ -268,6 +282,8 @@ class GraphRunEngine implements GraphRunHandle {
     this.options = options;
     this.executor = options.executor;
     this.parentContext = options.parentContext;
+    this.now = options.now ?? Date.now;
+    this.monotonicNow = options.monotonicNow ?? (() => performance.now());
     if (options.runId !== undefined) {
       this.runId = options.runId;
     } else {
@@ -299,6 +315,11 @@ class GraphRunEngine implements GraphRunHandle {
   }
 
   start(): void {
+    // Establish the authoritative wall-clock boundary before any lifecycle event.
+    const startedAtEpochMs = this.now();
+    this.startedAtEpochMs = Number.isFinite(startedAtEpochMs) ? startedAtEpochMs : Date.now();
+    const startedAtMonotonicMs = this.monotonicNow();
+    this.startedAtMonotonicMs = Number.isFinite(startedAtMonotonicMs) ? startedAtMonotonicMs : performance.now();
     this.runState = "running";
     this.emit({ type: "run_started", runId: this.runId, graphId: this.graphId });
     if (this.options.parentSignal?.aborted) {
@@ -322,7 +343,16 @@ class GraphRunEngine implements GraphRunHandle {
     };
     const nodes = Object.freeze(this.runtimes.map((runtime) => this.nodeSnapshot(runtime)));
     const artifacts = Object.freeze([...this.artifacts]);
-    const base = { runId: this.runId, graphId: this.graphId, nodes, artifacts, usage };
+    const base = {
+      runId: this.runId,
+      graphId: this.graphId,
+      startedAtEpochMs: this.startedAtEpochMs,
+      elapsedMs: this.isTerminal() ? this.elapsedMs : this.updateElapsedHighWater(),
+      turnCount: this.turnCount,
+      nodes,
+      artifacts,
+      usage,
+    };
     if (this.runState === "failed") {
       return deepFreeze({
         ...base,
@@ -395,6 +425,16 @@ class GraphRunEngine implements GraphRunHandle {
 
   private isTerminal(): boolean {
     return this.runState === "succeeded" || this.runState === "failed" || this.runState === "cancelled";
+  }
+
+  private currentElapsedMs(): number {
+    const now = this.monotonicNow();
+    return Number.isFinite(now) ? Math.max(0, now - this.startedAtMonotonicMs) : 0;
+  }
+
+  private updateElapsedHighWater(): number {
+    this.elapsedMs = Math.max(this.elapsedMs, this.currentElapsedMs());
+    return this.elapsedMs;
   }
 
   private emit(event: GraphLifecycleEvent): void {
@@ -584,6 +624,7 @@ class GraphRunEngine implements GraphRunHandle {
           })(),
         parentContext: this.parentContext,
         signal: this.abortController.signal,
+        onTurnStart: () => this.recordTurn(runtime),
       };
       void this.awaitAttempt(runtime, request);
     } catch (error) {
@@ -723,6 +764,12 @@ class GraphRunEngine implements GraphRunHandle {
     this.transition(runtime, "succeeded");
   }
 
+  private recordTurn(runtime: NodeRuntime): void {
+    if (this.isTerminal() || runtime.state !== "running") return;
+    this.turnCount += 1;
+    this.emit({ type: "turn_started", runId: this.runId, turnCount: this.turnCount });
+  }
+
   private addUsage(usage: Usage | undefined): void {
     if (usage === undefined) return;
     this.usageTotals.inputTokens += usage.inputTokens;
@@ -813,6 +860,7 @@ class GraphRunEngine implements GraphRunHandle {
     } else {
       this.runState = "succeeded";
     }
+    this.updateElapsedHighWater();
     const snapshot = this.snapshot();
     this.emit(
       this.runState === "failed"
@@ -830,6 +878,7 @@ class GraphRunEngine implements GraphRunHandle {
       message: "scheduler stalled with non-terminal nodes and no in-flight work",
     };
     this.runState = "failed";
+    this.updateElapsedHighWater();
     const snapshot = this.snapshot();
     this.emit({ type: "run_failed", runId: this.runId, snapshot });
     this.resolveDone(snapshot);

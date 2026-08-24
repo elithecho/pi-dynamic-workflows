@@ -31,6 +31,7 @@ import {
 
 const parentModel: ModelSelector = { provider: "test", modelId: "parent-model" };
 const parent: InvokingParentExecutionContext = { model: parentModel, thinking: "medium" };
+type GraphSessionEvent = Parameters<Parameters<NonNullable<GraphSession["subscribe"]>>[0]>[0];
 
 const models: Record<string, { provider: string; id: string }> = {
   "test/parent-model": { provider: "test", id: "parent-model" },
@@ -54,6 +55,8 @@ interface FakeSessionOptions {
   waitForAbort?: boolean;
   /** When true, this session's structured_output tool (if any) is invoked to set capture. */
   callStructuredOutput?: boolean;
+  /** Number of SDK turn_start events emitted before prompt resolves. */
+  turnStarts?: number;
 }
 
 class FakeSessionFactory {
@@ -61,6 +64,8 @@ class FakeSessionFactory {
     options: CreateAgentSessionOptions;
     disposed: boolean;
     aborted: boolean;
+    subscribed: boolean;
+    unsubscribed: boolean;
   }> = [];
   private readonly behavior: (callIndex: number) => FakeSessionOptions;
 
@@ -70,16 +75,29 @@ class FakeSessionFactory {
 
   readonly factoryImpl: GraphSessionFactory = async (options: CreateAgentSessionOptions) => {
     const callIndex = this.calls.length;
-    const record = { options, disposed: false, aborted: false };
+    const record = { options, disposed: false, aborted: false, subscribed: false, unsubscribed: false };
     this.calls.push(record);
     const config = this.behavior(callIndex);
     let sessionMessages: AgentMessageLike[] = [];
     let sessionAborted = false;
+    let turnListener: ((event: GraphSessionEvent) => void) | undefined;
     const session: GraphSession = {
       get messages() {
         return sessionMessages;
       },
+      subscribe(listener) {
+        record.subscribed = true;
+        turnListener = listener;
+        return () => {
+          record.unsubscribed = true;
+          turnListener = undefined;
+        };
+      },
       async prompt() {
+        assert.equal(record.subscribed, true, "turn subscription is installed before prompt");
+        for (let turnIndex = 0; turnIndex < (config.turnStarts ?? 0); turnIndex += 1) {
+          turnListener?.({ type: "turn_start" });
+        }
         if (config.waitForAbort) {
           await new Promise<void>((resolve) => {
             const check = () => {
@@ -150,6 +168,25 @@ const message = (
   ...(content !== undefined ? { content } : {}),
   ...(usage !== undefined ? { usage } : {}),
   ...extra,
+});
+
+test("counts SDK turns and removes the session subscription after prompt", async () => {
+  const factory = new FakeSessionFactory(() => ({
+    messages: [message("assistant", [{ type: "text", text: "done" }])],
+    turnStarts: 2,
+  }));
+  let turnCount = 0;
+  const runner = new GraphAgentRunner({ modelRegistry: registry, sessionFactory: factory.factoryImpl });
+  const result = await runner.execute({
+    ...makeRequest({ id: "node" }, resolvedFrom()),
+    onTurnStart: () => {
+      turnCount += 1;
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(turnCount, 2);
+  assert.equal(factory.calls[0]?.subscribed, true);
+  assert.equal(factory.calls[0]?.unsubscribed, true);
 });
 
 test("explicit node model and thinking are passed to the session", async () => {

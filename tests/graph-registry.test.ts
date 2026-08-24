@@ -87,6 +87,20 @@ test("start stores the run and returns running without waiting for node completi
   if (status.ok) assert.equal(status.result.run.state, "running");
 });
 
+test("start reports the same immediate terminal state as its initial snapshot", () => {
+  const registry = new GraphRunRegistry();
+  const parentSignal = new AbortController();
+  parentSignal.abort();
+  const result = registry.start(chainedGraph(), parent, {
+    executor: createExecutor({ defer: noop }),
+    parentSignal: parentSignal.signal,
+  });
+  assert.equal(result.ok, true);
+  if (!result.ok) throw new Error("unreachable");
+  assert.equal(result.result.run.state, "cancelled");
+  assert.equal(result.result.state, result.result.run.state);
+});
+
 test("status observes the started run", async () => {
   const registry = new GraphRunRegistry();
   const result = registry.start(chainedGraph(), parent, { executor: createExecutor(), modelRegistry });

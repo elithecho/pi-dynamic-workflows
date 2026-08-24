@@ -77,7 +77,8 @@ export class GraphRunRegistry {
         ok: true,
         result: {
           runId: handle.runId,
-          state: snapshot.state === "running" ? "running" : "created",
+          state: snapshot.state,
+          run: snapshot,
         },
       };
     } catch (error) {

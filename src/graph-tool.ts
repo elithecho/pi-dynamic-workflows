@@ -165,14 +165,11 @@ export function createWorkflowGraphTool(
             },
           });
           if (!startResult.ok) throw toolFailure("start", startResult.error);
-          const initialSnapshot = registry.snapshot(startResult.result.runId);
-          if (initialSnapshot !== undefined) display.update(initialSnapshot);
+          const initialSnapshot = startResult.result.run;
+          display.update(initialSnapshot);
           return {
             content: [
-              {
-                type: "text",
-                text: `Started workflow_graph run ${startResult.result.runId} (state ${startResult.result.state}). Use operation "status" or "wait" with the runId to observe, and operation "cancel" to stop.`,
-              },
+              { type: "text", text: renderGraphSnapshotText(initialSnapshot, initialSnapshot.state !== "running") },
             ],
             details: { ok: true, result: startResult.result },
           };

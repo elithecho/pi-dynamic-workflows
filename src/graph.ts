@@ -202,6 +202,12 @@ export interface Cancellation {
 export interface GraphRunSnapshotBase {
   readonly runId: string;
   readonly graphId: string;
+  /** Epoch milliseconds when GraphRunEngine.start() established the run boundary. */
+  readonly startedAtEpochMs: number;
+  /** Monotonic elapsed duration; running snapshots calculate this, terminal snapshots freeze it. */
+  readonly elapsedMs: number;
+  /** Aggregate SDK turn_start events across every child session and retry. */
+  readonly turnCount: number;
   readonly nodes: readonly NodeSnapshot[];
   readonly artifacts: readonly Artifact[];
   readonly usage: Usage;
@@ -336,7 +342,10 @@ export interface GraphStartRequest {
 
 export interface GraphStartResult {
   readonly runId: string;
-  readonly state: "created" | "running";
+  /** State copied from the full initial snapshot, including immediate terminal runs. */
+  readonly state: GraphRunSnapshot["state"];
+  /** Full initial snapshot for tool renderers and callers observing start. */
+  readonly run: GraphRunSnapshot;
 }
 
 export interface GraphStatusRequest {
@@ -386,6 +395,7 @@ export type GraphCancelOperationResult = GraphOperationResult<GraphCancelResult>
 
 export type GraphLifecycleEvent =
   | { readonly type: "run_started"; readonly runId: string; readonly graphId: string }
+  | { readonly type: "turn_started"; readonly runId: string; readonly turnCount: number }
   | { readonly type: "node_state_changed"; readonly runId: string; readonly node: NodeSnapshot }
   | { readonly type: "run_completed"; readonly runId: string; readonly snapshot: GraphRunSnapshot }
   | { readonly type: "run_failed"; readonly runId: string; readonly snapshot: GraphRunSnapshot }

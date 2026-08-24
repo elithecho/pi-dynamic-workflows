@@ -23,7 +23,12 @@ export {
 export type { GraphDefinition, GraphDefinitionNode, GraphDefinitionRoute } from "./graph-definition.js";
 export { compileGraphDefinition } from "./graph-definition.js";
 export type { GraphDisplay, GraphDisplayOptions } from "./graph-display.js";
-export { createWidgetGraphDisplay, renderGraphSnapshotLines, renderGraphSnapshotText } from "./graph-display.js";
+export {
+  createWidgetGraphDisplay,
+  formatGraphElapsed,
+  renderGraphSnapshotLines,
+  renderGraphSnapshotText,
+} from "./graph-display.js";
 export type { GraphRunRegistryStartOptions, GraphWaitClaimResult } from "./graph-registry.js";
 export { GraphRunRegistry } from "./graph-registry.js";
 export { compileGraphScript, GraphScriptError } from "./graph-script.js";

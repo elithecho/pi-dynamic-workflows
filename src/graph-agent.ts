@@ -19,6 +19,7 @@
 
 import type { Usage as AiUsage, AssistantMessage, Model, TextContent } from "@earendil-works/pi-ai";
 import {
+  type AgentSessionEventListener,
   type CreateAgentSessionOptions,
   createAgentSession,
   createCodingTools,
@@ -98,6 +99,8 @@ export interface GraphModelRegistryLike {
 /** Result of creating a child session; injected so tests stay hermetic. */
 export interface GraphSession {
   readonly messages: AgentMessageLike[];
+  /** Optional for hermetic fakes; real Pi sessions always provide it. */
+  subscribe?: (listener: AgentSessionEventListener) => () => void;
   prompt(input: string): Promise<void>;
   abort(): void;
   dispose(): void;
@@ -216,6 +219,7 @@ export class GraphAgentRunner implements NodeExecutor {
       return this.fail(node.id, "invalid_state", `failed to create session for ${node.id}: ${formatError(error)}`);
     }
     let removeAbortListener: (() => void) | undefined;
+    let removeTurnListener: (() => void) | undefined;
     try {
       if (request.signal.aborted) {
         session.abort();
@@ -224,6 +228,9 @@ export class GraphAgentRunner implements NodeExecutor {
       const onAbort = () => session.abort();
       request.signal.addEventListener("abort", onAbort, { once: true });
       removeAbortListener = () => request.signal.removeEventListener("abort", onAbort);
+      removeTurnListener = session.subscribe?.((event) => {
+        if (event.type === "turn_start") request.onTurnStart?.();
+      });
 
       await session.prompt(this.buildPrompt(request));
       if (request.signal.aborted) {
@@ -256,6 +263,7 @@ export class GraphAgentRunner implements NodeExecutor {
       }
       return this.fail(node.id, "invalid_state", `node execution failed: ${formatError(error)}`);
     } finally {
+      removeTurnListener?.();
       removeAbortListener?.();
       clearTimeout(abortTimer);
       session.dispose();
