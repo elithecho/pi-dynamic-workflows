@@ -1,6 +1,7 @@
 import { performance } from "node:perf_hooks";
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import { formatGraphFinalAnswer, type GraphRunSnapshot, type NodeSnapshot } from "./graph.js";
 
 export interface GraphDisplayOptions {
@@ -62,11 +63,13 @@ function createRunningGraphWidget(
       tui.requestRender();
     }, 100);
     return {
-      render(_width) {
+      render(width) {
         const mountedDeltaMs = monotonicNow() - mountedAtMonotonicMs;
         if (Number.isFinite(mountedDeltaMs))
           elapsedMs = Math.max(elapsedMs, snapshotElapsedMs + Math.max(0, mountedDeltaMs));
-        return renderGraphSnapshotLines(snapshot, RUNNING_FRAMES[frameIndex] ?? RUNNING_FRAMES[0], elapsedMs);
+        return renderGraphSnapshotLines(snapshot, RUNNING_FRAMES[frameIndex] ?? RUNNING_FRAMES[0], elapsedMs).map(
+          (line) => truncateToWidth(line, width),
+        );
       },
       invalidate() {},
       dispose() {

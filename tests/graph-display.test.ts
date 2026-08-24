@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import type { GraphRunSnapshot, GraphRunSnapshotBase } from "../src/graph.js";
 import {
   createWidgetGraphDisplay,
@@ -198,6 +199,46 @@ test("createWidgetGraphDisplay updates the widget and status and notifies on com
   display.clear();
   assert.ok(calls.some((call) => call.kind === "setWidget" && call.value === undefined));
   assert.ok(calls.some((call) => call.kind === "setStatus" && call.value === undefined));
+});
+
+test("running widget bounds every rendered line to the requested width", () => {
+  const { ui, calls } = recordingUi();
+  const ctx = { ui, hasUI: true } as unknown as Pick<ExtensionContext, "ui" | "hasUI">;
+  const display = createWidgetGraphDisplay(ctx, { monotonicNow: () => 1_000 });
+  const snapshot: GraphRunSnapshot = {
+    ...runningSnapshot(),
+    graphId: "g".repeat(20),
+    runId: "r".repeat(20),
+    nodes: [
+      { id: `node-${"x".repeat(20)}`, attempt: 1, artifactIds: [], state: "succeeded" },
+      {
+        id: `skipped-${"x".repeat(12)}`,
+        attempt: 1,
+        artifactIds: [],
+        state: "skipped",
+        skipReason: "route_not_selected",
+      },
+    ],
+  };
+
+  display.update(snapshot);
+  const factoryCall = calls.filter((call) => call.kind === "setWidget")[1];
+  assert.ok(factoryCall && typeof factoryCall.value === "function");
+  const widget = (
+    factoryCall.value as (tui: unknown, theme: unknown) => { render(width: number): string[]; dispose(): void }
+  )({ requestRender() {} }, {});
+  const width = 24;
+  try {
+    const lines = widget.render(width);
+    const widths = lines.map((line) => visibleWidth(line));
+    assert.ok(
+      widths.every((lineWidth) => lineWidth <= width),
+      `rendered widths: ${widths.join(", ")}`,
+    );
+  } finally {
+    widget.dispose();
+    display.clear();
+  }
 });
 
 test("default running updates survive an RPC-like host ignoring component factories", () => {
