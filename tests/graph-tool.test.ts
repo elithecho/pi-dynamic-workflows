@@ -414,8 +414,9 @@ test("wait_for_workflow handles unknown, already-terminal, and caller-aborted wa
   assert.equal((terminal.details as { result: { run: GraphRunSnapshot } }).result.run.state, "succeeded");
 
   const deferredRegistry = new GraphRunRegistry();
+  const deferredExecutor = new RecordingExecutor({ deferNode: "a" });
   const deferredWorkflow = createWorkflowGraphTool({
-    executor: new RecordingExecutor({ deferNode: "a" }),
+    executor: deferredExecutor,
     registry: deferredRegistry,
     getThinkingLevel: () => "medium",
   });
@@ -439,14 +440,27 @@ test("wait_for_workflow handles unknown, already-terminal, and caller-aborted wa
     undefined,
     fakeCtx(),
   );
-  assert.equal((status.details as { result: { run: GraphRunSnapshot } }).result.run.state, "running");
-  await deferredWorkflow.execute(
-    "cancel",
-    { operation: "cancel", runId: deferredRunId },
+  const statusRun = (status.details as { result: { run: GraphRunSnapshot } }).result.run;
+  assert.equal(statusRun.runId, deferredRunId);
+  assert.equal(statusRun.state, "running");
+
+  const separateRegistryStatus = new GraphRunRegistry().status(deferredRunId);
+  assert.equal(separateRegistryStatus.ok, false);
+  if (!separateRegistryStatus.ok) assert.equal(separateRegistryStatus.error.code, "run_not_found");
+
+  // Aborting the waiter does not cancel the graph. The same process-local run
+  // remains authoritative and can be queried to completion by its runId.
+  deferredExecutor.deferNode("a").resolve();
+  const completed = await deferredWorkflow.execute(
+    "wait-after-abort",
+    { operation: "wait", runId: deferredRunId },
     undefined,
     undefined,
     fakeCtx(),
   );
+  const completedRun = (completed.details as { result: { run: GraphRunSnapshot } }).result.run;
+  assert.equal(completedRun.runId, deferredRunId);
+  assert.equal(completedRun.state, "succeeded");
 });
 
 test("start returns before completion with a runId while nodes stay pending", async () => {

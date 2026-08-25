@@ -89,21 +89,24 @@ compilation. It is the most verbose surface and not recommended for agent author
 - **`wait_for_workflow`** takes only `runId` and waits indefinitely for a terminal state. It claims a
   still-running run, returns the same bounded terminal result and canonical final-answer presentation
   as `workflow_graph wait`, and returns `terminate: true` so the parent turn ends without another
-  model response. Aborting this tool's wait does not cancel the graph. If the run is already terminal,
-  it safely returns its snapshot without claiming it; the automatic terminal relay may already have
-  occurred in that race.
+  model response. Aborting this tool aborts only that caller's wait; it does not cancel the graph. The
+  same process-local run remains authoritative and queryable through `status` or `wait` with the same
+  `runId`, and can be awaited again with `wait_for_workflow`. Runs are in-memory only and are not
+  queryable after the Pi process exits or restarts. If the run is already terminal, it safely returns
+  its snapshot without claiming it.
 - Progress surfaces through the `workflow_graph` UI widget. When the run reaches a terminal state,
-  the extension sends one custom follow-up that wakes the parent unless `wait_for_workflow` claimed
-  the run first; successful runs include only the
-  canonical final answer from their successful topology sink(s). Intermediate node artifacts
-  are never relayed.
+  the extension normally sends one custom follow-up that wakes the parent unless
+  `wait_for_workflow` claimed the run first; successful runs include only the canonical final answer
+  from their successful topology sink(s). Intermediate node artifacts are never relayed. Do not rely
+  on an exact-once terminal notification if waiter abortion races with completion; query the run by
+  `runId` instead.
 
 Two guarantees to rely on: **start-before-completion** — the `start` call returns as soon as the
-run is registered, whatever the graph's duration; and **terminal-only relay** — completion wakes the
-parent once with the terminal state and, on success, the final answer. Every successful topology
-sink contributes in graph declaration order: an agent contributes finalText, while a deterministic
-sink contributes its string value or stable JSON text. A single sink is returned verbatim; multiple
-sinks use labelled `### nodeId` blocks. Failed runs include bounded error code/node/message metadata;
+run is registered, whatever the graph's duration; and **terminal-only relay** — a completion relay,
+when delivered, contains the terminal state and, on success, the final answer. Every successful
+topology sink contributes in graph declaration order: an agent contributes finalText, while a
+deterministic sink contributes its string value or stable JSON text. A single sink is returned
+verbatim; multiple sinks use labelled `### nodeId` blocks. Failed runs include bounded error code/node/message metadata;
 cancelled runs include their cancellation reason. If the agent needs the full snapshot, it can still
 poll with `status` / `wait`.
 

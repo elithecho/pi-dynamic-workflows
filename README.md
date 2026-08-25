@@ -88,12 +88,15 @@ wait_for_workflow { runId }                                    → terminal run 
 ```
 
 `start` returns immediately while the graph runs in the background. Progress appears in the
-`workflow_graph` widget. A terminal follow-up wakes the parent once with the canonical final
+`workflow_graph` widget. A terminal follow-up normally wakes the parent with the canonical final
 answer from successful sinks; intermediate artifacts remain inside the graph runtime. Use
 `wait_for_workflow { runId }` when the parent should block until completion; it claims a still-running
 run, returns the same bounded terminal result as `workflow_graph wait`, and ends the parent turn
-without an additional model response. Both tools share one process-local registry per extension
-runtime. Aborting the wait only aborts that caller's wait, not the graph.
+without an additional model response. Both tools share one process-local, in-memory registry per
+extension runtime. Aborting the wait only aborts that caller's wait, not the graph: the same run
+remains queryable by its `runId` while that Pi process lives, but not after process exit or restart.
+Do not rely on an exact-once terminal notification if waiter abortion races with completion; query by
+`runId` instead.
 
 ### DSL rules
 

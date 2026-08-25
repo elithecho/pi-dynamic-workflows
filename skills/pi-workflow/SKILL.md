@@ -98,11 +98,13 @@ waits for all three sources and `report` receives `{ facts, risks, dups }`.
   model response. It shares the same process-local registry as `workflow_graph`; it is the preferred
   replacement for polling with `status`/`wait` when the parent wants to wait for terminal completion.
   Aborting the tool wait does not cancel the graph: a pre-aborted wait claims nothing, and a waiter
-  aborted mid-wait releases its relay claim so natural completion still emits the normal automatic
-  follow-up. A successful terminal wait suppresses that duplicate follow-up. Concurrent waiters own
-  independent claims, and terminal-versus-abort races resolve once without losing the normal wake-up.
+  aborted mid-wait releases its relay claim. The same run remains queryable by its `runId` while the
+  Pi process lives; the registry is in-memory and does not survive process exit or restart. A
+  successful terminal wait normally suppresses the automatic follow-up. Concurrent waiters own
+  independent claims, but do not depend on exact-once notification if waiter abortion races with
+  completion; query the run by `runId` instead.
 
-Completion surfaces through the `workflow_graph` UI widget and a single terminal follow-up that
+Completion normally surfaces through the `workflow_graph` UI widget and a terminal follow-up that
 wakes the parent turn with the canonical final answer. Intermediate node artifacts remain direct
 graph inputs and are not relayed. Use `status`/`wait` when you need to inspect a run explicitly;
 use `wait_for_workflow` when the parent should block until completion.
@@ -115,9 +117,10 @@ use `wait_for_workflow` when the parent should block until completion.
   otherwise-without-when, cycle, duplicate id, id-pattern violation) surface with the underlying
   code preserved (`invalid_regex` etc.), `cause` = the `GraphContractError`, `loc` when
   attributable.
-- Expect one terminal completion message that wakes the parent turn. It contains the canonical
-  final answer on success, or actionable failure/cancellation metadata; intermediate artifacts
-  are excluded.
+- Expect a terminal completion message that, when delivered, wakes the parent turn. It contains
+  the canonical final answer on success, or actionable failure/cancellation metadata; intermediate
+  artifacts are excluded. Query by `runId` rather than relying on exact-once notification in an
+  abort/completion race.
 
 ## Reference
 
