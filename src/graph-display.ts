@@ -7,6 +7,7 @@ import { formatGraphFinalAnswer, type GraphRunSnapshot, type NodeSnapshot } from
 export interface GraphDisplayOptions {
   readonly key?: string; // default "workflow_graph"; run id is appended once known
   readonly placement?: "aboveEditor" | "belowEditor"; // default "belowEditor"
+  readonly showWidget?: boolean; // default true
   /** Injectable monotonic clock for deterministic display tests. */
   readonly monotonicNow?: () => number;
 }
@@ -14,6 +15,11 @@ export interface GraphDisplay {
   update(snapshot: GraphRunSnapshot): void;
   complete(snapshot: GraphRunSnapshot): void;
   clear(): void;
+}
+
+export interface LiveGraphResultComponent extends Component {
+  update(snapshot: GraphRunSnapshot): void;
+  dispose(): void;
 }
 
 const NODE_ICONS: Readonly<Record<NodeSnapshot["state"], string>> = {
@@ -44,8 +50,8 @@ function getCoordinator(ui: object): GraphDisplayCoordinator {
   return created;
 }
 
-function removeDisplay(ui: Pick<ExtensionContext, "ui">["ui"], key: string): void {
-  ui.setWidget(key, undefined);
+function removeDisplay(ui: Pick<ExtensionContext, "ui">["ui"], key: string, showWidget: boolean): void {
+  if (showWidget) ui.setWidget(key, undefined);
   ui.setStatus(key, undefined);
 }
 
@@ -128,12 +134,99 @@ export function renderGraphSnapshotText(snapshot: GraphRunSnapshot, completed: b
   return [`workflow_graph run ${snapshot.runId} ${stateWord}`, ...renderGraphSnapshotLines(snapshot)].join("\n");
 }
 
+export function createLiveGraphResultComponent(
+  initialSnapshot: GraphRunSnapshot,
+  getSnapshot: () => GraphRunSnapshot | undefined,
+  invalidate: () => void,
+  monotonicNow: () => number = () => performance.now(),
+  onDispose?: () => void,
+): LiveGraphResultComponent {
+  let snapshot = initialSnapshot;
+  let frameIndex = 0;
+  const initialElapsedMs = Number.isFinite(snapshot.elapsedMs) ? Math.max(0, snapshot.elapsedMs) : 0;
+  let elapsedMs = initialElapsedMs;
+  const mountedAtMonotonicMs = monotonicNow();
+  let timer: ReturnType<typeof setInterval> | undefined;
+
+  const stopTimer = (): void => {
+    if (timer === undefined) return;
+    clearInterval(timer);
+    timer = undefined;
+  };
+  const notifyInvalidated = (): void => {
+    try {
+      invalidate();
+    } catch {
+      // A host invalidator must not affect workflow completion or cleanup.
+    }
+  };
+  const startTimer = (): void => {
+    if (timer !== undefined || snapshot.state !== "running") return;
+    timer = setInterval(() => {
+      if (snapshot.state !== "running") {
+        stopTimer();
+        return;
+      }
+      frameIndex = (frameIndex + 1) % RUNNING_FRAMES.length;
+      notifyInvalidated();
+    }, 100);
+  };
+  const updateElapsed = (current: GraphRunSnapshot): number => {
+    const snapshotElapsedMs = Number.isFinite(current.elapsedMs) ? Math.max(0, current.elapsedMs) : 0;
+    if (current.state === "running") {
+      const mountedDeltaMs = monotonicNow() - mountedAtMonotonicMs;
+      if (Number.isFinite(mountedDeltaMs)) {
+        elapsedMs = Math.max(elapsedMs, snapshotElapsedMs, initialElapsedMs + Math.max(0, mountedDeltaMs));
+      } else {
+        elapsedMs = Math.max(elapsedMs, snapshotElapsedMs);
+      }
+    } else {
+      elapsedMs = Math.max(elapsedMs, snapshotElapsedMs);
+    }
+    return elapsedMs;
+  };
+
+  startTimer();
+  return {
+    render(width) {
+      const latest = getSnapshot();
+      if (latest !== undefined) snapshot = latest;
+      if (snapshot.state === "running") startTimer();
+      else stopTimer();
+      const completed = snapshot.state !== "running";
+      const stateWord = completed
+        ? snapshot.state === "failed"
+          ? "failed"
+          : snapshot.state === "cancelled"
+            ? "cancelled"
+            : "completed"
+        : "running";
+      return [
+        `workflow_graph run ${snapshot.runId} ${stateWord}`,
+        ...renderGraphSnapshotLines(snapshot, RUNNING_FRAMES[frameIndex], updateElapsed(snapshot)),
+      ].map((line) => truncateToWidth(line, width));
+    },
+    invalidate() {},
+    update(nextSnapshot) {
+      snapshot = nextSnapshot;
+      if (snapshot.state === "running") startTimer();
+      else stopTimer();
+      notifyInvalidated();
+    },
+    dispose() {
+      stopTimer();
+      onDispose?.();
+    },
+  };
+}
+
 export function createWidgetGraphDisplay(
   ctx: Pick<ExtensionContext, "ui" | "hasUI">,
   options: GraphDisplayOptions = {},
 ): GraphDisplay {
   const keyPrefix = options.key ?? "workflow_graph";
   const placement = options.placement ?? "belowEditor";
+  const showWidget = options.showWidget ?? true;
   const monotonicNow = options.monotonicNow ?? (() => performance.now());
   const coordinator = getCoordinator(ctx.ui);
   let activeKey: string | undefined;
@@ -141,13 +234,13 @@ export function createWidgetGraphDisplay(
   const releaseKey = (key: string): void => {
     coordinator.activeKeys.delete(key);
     if (coordinator.retainedKey === key) coordinator.retainedKey = undefined;
-    removeDisplay(ctx.ui, key);
+    removeDisplay(ctx.ui, key, showWidget);
   };
 
   const retainTerminal = (key: string): void => {
     const previous = coordinator.retainedKey;
     if (previous !== undefined && previous !== key && !coordinator.activeKeys.has(previous)) {
-      removeDisplay(ctx.ui, previous);
+      removeDisplay(ctx.ui, previous, showWidget);
     }
     coordinator.retainedKey = key;
   };
@@ -159,13 +252,15 @@ export function createWidgetGraphDisplay(
     activeKey = nextKey;
     if (snapshot.state === "running") {
       coordinator.activeKeys.add(activeKey);
-      // RPC hosts retain this array and ignore the following component factory;
-      // interactive TUI hosts replace it with the animated component.
-      ctx.ui.setWidget(activeKey, renderGraphSnapshotLines(snapshot), { placement });
-      ctx.ui.setWidget(activeKey, createRunningGraphWidget(snapshot, monotonicNow), { placement });
+      if (showWidget) {
+        // RPC hosts retain this array and ignore the following component factory;
+        // interactive TUI hosts replace it with the animated component.
+        ctx.ui.setWidget(activeKey, renderGraphSnapshotLines(snapshot), { placement });
+        ctx.ui.setWidget(activeKey, createRunningGraphWidget(snapshot, monotonicNow), { placement });
+      }
     } else {
       coordinator.activeKeys.delete(activeKey);
-      ctx.ui.setWidget(activeKey, renderGraphSnapshotLines(snapshot), { placement });
+      if (showWidget) ctx.ui.setWidget(activeKey, renderGraphSnapshotLines(snapshot), { placement });
       retainTerminal(activeKey);
     }
     ctx.ui.setStatus(activeKey, `workflow_graph ${snapshot.runId}: ${snapshot.state} • turns ${snapshot.turnCount}`);

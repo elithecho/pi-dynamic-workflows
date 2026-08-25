@@ -87,9 +87,10 @@ workflow_graph { operation: "cancel", runId, reason? }         → cancellation 
 wait_for_workflow { runId }                                    → terminal run state/final answer
 ```
 
-`start` returns immediately while the graph runs in the background. Progress appears in the
-`workflow_graph` widget. A terminal follow-up normally wakes the parent with the canonical final
-answer from successful sinks; intermediate artifacts remain inside the graph runtime. Use
+`start` returns immediately while the graph runs in the background. The start tool-result row
+refreshes with current progress; no bottom widget is used. A terminal follow-up normally wakes the
+parent with the canonical final answer from successful sinks; intermediate artifacts remain inside
+the graph runtime. Use
 `wait_for_workflow { runId }` when the parent should block until completion; it claims a still-running
 run, returns the same bounded terminal result as `workflow_graph wait`, and ends the parent turn
 without an additional model response. Both tools share one process-local, in-memory registry per

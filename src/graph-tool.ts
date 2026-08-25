@@ -16,7 +16,12 @@ import {
 } from "./graph.js";
 import { GraphAgentRunner, type GraphSessionFactory } from "./graph-agent.js";
 import { compileGraphDefinition, type GraphDefinition } from "./graph-definition.js";
-import { createWidgetGraphDisplay, renderGraphSnapshotText } from "./graph-display.js";
+import {
+  createLiveGraphResultComponent,
+  createWidgetGraphDisplay,
+  type LiveGraphResultComponent,
+  renderGraphSnapshotText,
+} from "./graph-display.js";
 import { GraphRunRegistry } from "./graph-registry.js";
 import type { NodeExecutor } from "./graph-runtime.js";
 import { compileGraphScript } from "./graph-script.js";
@@ -79,6 +84,23 @@ export function createWorkflowGraphTool(
   // call: start/status/wait/cancel across separate tool calls must operate on
   // the SAME registry, otherwise later calls report run_not_found.
   const registry = options?.registry ?? new GraphRunRegistry();
+  const liveResultComponents = new Map<string, Set<LiveGraphResultComponent>>();
+
+  const notifyLiveResultComponents = (snapshot: GraphRunSnapshot): void => {
+    const components = liveResultComponents.get(snapshot.runId);
+    if (components === undefined) return;
+    try {
+      for (const component of components) {
+        try {
+          component.update(snapshot);
+        } catch {
+          // A result-row observer must not affect terminal handling.
+        }
+      }
+    } finally {
+      if (snapshot.state !== "running") liveResultComponents.delete(snapshot.runId);
+    }
+  };
 
   return defineTool({
     name: "workflow_graph",
@@ -95,7 +117,7 @@ export function createWorkflowGraphTool(
       "workflow_graph scripts are declarative: declare agent nodes and edges; do not use await, return, loops, or other imperative control flow.",
       "start returns a runId immediately and the graph runs in the background; the main agent stays available for other work.",
       'Use operation "status" or "wait" with the runId to observe a run; use operation "cancel" to stop it.',
-      "Progress is surfaced through the workflow_graph UI widget; terminal completion may wake the parent with only the canonical final answer from every successful topology sink (agent finalText or deterministic value, labelled for multiple sinks; never intermediate artifacts).",
+      "The start tool-result row refreshes with current progress; no bottom widget is used. Terminal completion may wake the parent with only the canonical final answer from every successful topology sink (agent finalText or deterministic value, labelled for multiple sinks; never intermediate artifacts).",
     ],
     parameters: workflowGraphToolSchema,
     prepareArguments(args) {
@@ -136,15 +158,20 @@ export function createWorkflowGraphTool(
               timeoutMs: options?.timeoutMs,
               sessionFactory: options?.sessionFactory,
             });
-          const display = createWidgetGraphDisplay({ ui: ctx.ui, hasUI: ctx.hasUI });
+          const display = createWidgetGraphDisplay({ ui: ctx.ui, hasUI: ctx.hasUI }, { showWidget: false });
           const startResult = registry.start(graphSpec, parentContext, {
             executor,
             modelRegistry: ctx.modelRegistry,
             onEvent: (event: GraphLifecycleEvent) => {
+              const snapshot =
+                event.type === "run_completed" || event.type === "run_failed" || event.type === "run_cancelled"
+                  ? event.snapshot
+                  : registry.snapshot(event.runId);
               if (event.type === "run_completed" || event.type === "run_failed" || event.type === "run_cancelled") {
                 // Reserve terminal ownership before invoking UI hooks, which may synchronously
                 // trigger an abort. This makes terminal-vs-abort ordering deterministic.
                 const suppressRelay = registry.consumeTerminalRelaySuppression(event.runId);
+                notifyLiveResultComponents(event.snapshot);
                 try {
                   display.complete(event.snapshot);
                 } catch {
@@ -158,9 +185,9 @@ export function createWorkflowGraphTool(
                 } catch {
                   // Completion relay failures must not affect graph execution.
                 }
-              } else {
-                const snap = registry.snapshot(event.runId);
-                if (snap !== undefined) display.update(snap);
+              } else if (snapshot !== undefined) {
+                notifyLiveResultComponents(snapshot);
+                display.update(snapshot);
               }
             },
           });
@@ -231,9 +258,59 @@ export function createWorkflowGraphTool(
     renderCall(_args, theme) {
       return new Text(theme.fg("toolTitle", theme.bold("workflow_graph")), 0, 0);
     },
-    renderResult(result, { isPartial: _isPartial }, theme) {
+    renderResult(result, { isPartial: _isPartial }, theme, context) {
       const run = (result.details as { result?: { run?: GraphRunSnapshot } } | undefined)?.result?.run;
       if (run !== undefined) {
+        if (
+          (context.args as { operation?: string } | undefined)?.operation === "start" &&
+          context.state !== undefined
+        ) {
+          const state = context.state as { runId?: string; component?: LiveGraphResultComponent };
+          const previous = context.lastComponent as LiveGraphResultComponent | undefined;
+          const liveSnapshot = registry.snapshot(run.runId);
+          const canRegister = run.state === "running" && liveSnapshot?.state === "running";
+          if (!canRegister) {
+            if (state.component !== undefined) state.component.dispose();
+            else if (state.runId === run.runId && previous !== undefined) previous.dispose();
+            state.runId = run.runId;
+            state.component = undefined;
+            const snapshot = liveSnapshot ?? run;
+            return new Text(renderGraphSnapshotText(snapshot, snapshot.state !== "running"), 0, 0);
+          }
+          if (
+            state.runId === run.runId &&
+            state.component === undefined &&
+            previous !== undefined &&
+            typeof previous.update === "function"
+          ) {
+            state.component = previous;
+            const components = liveResultComponents.get(run.runId) ?? new Set<LiveGraphResultComponent>();
+            components.add(previous);
+            liveResultComponents.set(run.runId, components);
+          }
+          if (state.runId !== run.runId || state.component === undefined) {
+            state.component?.dispose();
+            state.runId = run.runId;
+            let component!: LiveGraphResultComponent;
+            component = createLiveGraphResultComponent(
+              run,
+              () => registry.snapshot(run.runId),
+              context.invalidate,
+              undefined,
+              () => {
+                const components = liveResultComponents.get(run.runId);
+                if (components === undefined) return;
+                components.delete(component);
+                if (components.size === 0) liveResultComponents.delete(run.runId);
+              },
+            );
+            state.component = component;
+            const components = liveResultComponents.get(run.runId) ?? new Set<LiveGraphResultComponent>();
+            components.add(component);
+            liveResultComponents.set(run.runId, components);
+          }
+          return state.component;
+        }
         return new Text(renderGraphSnapshotText(run, run.state !== "running"), 0, 0);
       }
       const first = result.content?.[0];

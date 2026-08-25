@@ -104,7 +104,7 @@ waits for all three sources and `report` receives `{ facts, risks, dups }`.
   independent claims, but do not depend on exact-once notification if waiter abortion races with
   completion; query the run by `runId` instead.
 
-Completion normally surfaces through the `workflow_graph` UI widget and a terminal follow-up that
+Completion normally refreshes the `start` tool-result row and sends a terminal follow-up that
 wakes the parent turn with the canonical final answer. Intermediate node artifacts remain direct
 graph inputs and are not relayed. Use `status`/`wait` when you need to inspect a run explicitly;
 use `wait_for_workflow` when the parent should block until completion.

@@ -395,9 +395,9 @@ exactly one must be provided; providing none or more than one is a tool-input er
 
 - `script` — the leading surface: a v1 DSL script compiled by `compileGraphScript` into a frozen
   `GraphSpec` and started in the background (`start` returns a `runId` immediately;
-  `status` / `wait` / `cancel` manage the run; completion is surfaced via the UI widget and
-  lifecycle events, then normally wakes the parent with terminal state and the successful final
-  answer from every topology sink; intermediate artifacts are never relayed through a main-agent
+  `status` / `wait` / `cancel` manage the run; progress refreshes in the start tool-result row and
+  completion is surfaced through lifecycle/status notification, then normally wakes the parent with
+  terminal state and the successful final answer from every topology sink; intermediate artifacts are never relayed through a main-agent
   turn). A waiter-abort/completion race has no exact-once notification guarantee; query by `runId`.
 - `definition` — the JSON `nodes`/`routes` escape hatch compiled by `compileGraphDefinition`,
   for programmatic graph builders that prefer data over JS.

@@ -824,7 +824,255 @@ test("wait exposes only the canonical terminal answer and invokes completion onc
   const recordings = ctx.__recordings;
   assert.equal(recordings.notifyCalls.length, 1);
   assert.equal(recordings.notifyCalls[0]?.type, "info");
-  assert.ok(recordings.setWidgetCalls.length >= 1);
+  assert.equal(recordings.setWidgetCalls.length, 0);
+  assert.ok(recordings.setStatusCalls.length >= 1);
+});
+
+test("the start result row follows graph progress and completion without a widget", async () => {
+  const executor = new RecordingExecutor({ finalText: { a: "A", b: "B", c: "C" }, deferNode: "a" });
+  const bDeferred = executor.deferNode("b");
+  const registry = new GraphRunRegistry();
+  const tool = createWorkflowGraphTool({ executor, registry, getThinkingLevel: () => "medium" });
+  const ctx = fakeCtx();
+  const started = await tool.execute(
+    "live-start",
+    { operation: "start", graph: makeChainGraph() },
+    undefined,
+    undefined,
+    ctx,
+  );
+  const runId = (started.details as { result: { runId: string } }).result.runId;
+  const renderState = {};
+  let invalidations = 0;
+  const renderContext = {
+    args: { operation: "start" },
+    invalidate: () => {
+      invalidations += 1;
+    },
+    lastComponent: undefined,
+    state: renderState,
+  };
+  const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
+  const component = tool.renderResult?.(
+    started as never,
+    { expanded: false, isPartial: false },
+    theme as never,
+    renderContext as never,
+  );
+  assert.ok(component);
+  assert.match(component.render(120).join("\n"), /workflow_graph run .* running/);
+
+  executor.deferNode("a").resolve();
+  for (let attempt = 0; attempt < 20 && !executor.calls.some((call) => call.nodeId === "b"); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  const progressText = component.render(120).join("\n");
+  assert.match(progressText, /✓ a \[succeeded\]/);
+  assert.match(progressText, /● b \[running\]/);
+
+  bDeferred.resolve();
+  await registry.wait(runId);
+  const completedText = component.render(120).join("\n");
+  assert.match(completedText, /workflow_graph run .* completed/);
+  assert.match(completedText, /Final answer:\nC/);
+  const terminalInvalidations = invalidations;
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(invalidations, terminalInvalidations);
+  assert.ok(invalidations > 0);
+  assert.equal(ctx.__recordings.setWidgetCalls.length, 0);
+  assert.ok(ctx.__recordings.setStatusCalls.length > 0);
+  assert.equal(ctx.__recordings.notifyCalls.length, 1);
+});
+
+test("detached start result rows render statically without a registry or timer", async () => {
+  const sourceExecutor = new RecordingExecutor({ deferNode: "a" });
+  const sourceRegistry = new GraphRunRegistry();
+  const sourceTool = createWorkflowGraphTool({
+    executor: sourceExecutor,
+    registry: sourceRegistry,
+    getThinkingLevel: () => "medium",
+  });
+  const started = await sourceTool.execute(
+    "detached-start",
+    { operation: "start", graph: makeChainGraph() },
+    undefined,
+    undefined,
+    fakeCtx(),
+  );
+  const detachedTool = createWorkflowGraphTool({ registry: new GraphRunRegistry(), getThinkingLevel: () => "medium" });
+  let invalidations = 0;
+  const rendered = detachedTool.renderResult?.(
+    started as never,
+    { expanded: false, isPartial: false },
+    { fg: (_color: string, text: string) => text, bold: (text: string) => text } as never,
+    {
+      args: { operation: "start" },
+      state: {},
+      lastComponent: undefined,
+      invalidate: () => {
+        invalidations += 1;
+      },
+    } as never,
+  );
+  assert.equal(typeof (rendered as { update?: unknown }).update, "undefined");
+  assert.match(rendered?.render(120).join("\n") ?? "", /running/);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(invalidations, 0);
+  sourceExecutor.deferNode("a").resolve();
+  await sourceRegistry.wait((started.details as { result: { runId: string } }).result.runId);
+});
+
+test("terminal start results stay static when completion precedes row registration", async () => {
+  const registry = new GraphRunRegistry();
+  const tool = createWorkflowGraphTool({
+    executor: new RecordingExecutor({ finalText: { a: "A", b: "B", c: "C" } }),
+    registry,
+    getThinkingLevel: () => "medium",
+  });
+  const started = await tool.execute(
+    "terminal-before-render",
+    { operation: "start", graph: makeChainGraph() },
+    undefined,
+    undefined,
+    fakeCtx(),
+  );
+  const runId = (started.details as { result: { runId: string } }).result.runId;
+  await registry.wait(runId);
+  let invalidations = 0;
+  const rendered = tool.renderResult?.(
+    started as never,
+    { expanded: false, isPartial: false },
+    { fg: (_color: string, text: string) => text, bold: (text: string) => text } as never,
+    {
+      args: { operation: "start" },
+      state: {},
+      lastComponent: undefined,
+      invalidate: () => {
+        invalidations += 1;
+      },
+    } as never,
+  );
+  assert.equal(typeof (rendered as { update?: unknown }).update, "undefined");
+  assert.match(rendered?.render(120).join("\n") ?? "", /completed/);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(invalidations, 0);
+});
+
+test("disposing a live start row stops its timer and unregisters terminal updates", async () => {
+  const executor = new RecordingExecutor({ deferNode: "a" });
+  const registry = new GraphRunRegistry();
+  const tool = createWorkflowGraphTool({ executor, registry, getThinkingLevel: () => "medium" });
+  const started = await tool.execute(
+    "dispose-live-row",
+    { operation: "start", graph: makeChainGraph() },
+    undefined,
+    undefined,
+    fakeCtx(),
+  );
+  let invalidations = 0;
+  const component = tool.renderResult?.(
+    started as never,
+    { expanded: false, isPartial: false },
+    { fg: (_color: string, text: string) => text, bold: (text: string) => text } as never,
+    {
+      args: { operation: "start" },
+      state: {},
+      lastComponent: undefined,
+      invalidate: () => {
+        invalidations += 1;
+      },
+    } as never,
+  ) as unknown as { dispose(): void };
+  component.dispose();
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(invalidations, 0);
+  executor.deferNode("a").resolve();
+  await registry.wait((started.details as { result: { runId: string } }).result.runId);
+  assert.equal(invalidations, 0);
+});
+
+test("a throwing result-row invalidator does not suppress terminal handling or wait claims", async () => {
+  const completions: GraphRunSnapshot[] = [];
+  const registry = new GraphRunRegistry();
+  const executor = new RecordingExecutor({ deferNode: "a", finalText: { a: "A", b: "B", c: "C" } });
+  const tool = createWorkflowGraphTool({
+    executor,
+    registry,
+    getThinkingLevel: () => "medium",
+    onTerminalCompletion: (run) => {
+      completions.push(run);
+    },
+  });
+  const ctx = fakeCtx();
+  const started = await tool.execute(
+    "throwing-invalidator",
+    { operation: "start", graph: makeChainGraph() },
+    undefined,
+    undefined,
+    ctx,
+  );
+  const renderContext = {
+    args: { operation: "start" },
+    state: {},
+    lastComponent: undefined,
+    invalidate: () => {
+      throw new Error("host invalidator failed");
+    },
+  };
+  const component = tool.renderResult?.(
+    started as never,
+    { expanded: false, isPartial: false },
+    { fg: (_color: string, text: string) => text, bold: (text: string) => text } as never,
+    renderContext as never,
+  );
+  assert.equal(typeof (component as { update?: unknown }).update, "function");
+  const runId = (started.details as { result: { runId: string } }).result.runId;
+  executor.deferNode("a").resolve();
+  await registry.wait(runId);
+  assert.equal(completions.length, 1);
+  assert.equal(ctx.__recordings.notifyCalls.length, 1);
+  assert.ok(ctx.__recordings.setStatusCalls.length > 0);
+
+  const waitingExecutor = new RecordingExecutor({ deferNode: "a", finalText: { a: "A", b: "B", c: "C" } });
+  const waitingTool = createWorkflowGraphTool({
+    executor: waitingExecutor,
+    registry,
+    getThinkingLevel: () => "medium",
+    onTerminalCompletion: (run) => {
+      completions.push(run);
+    },
+  });
+  const waitingCtx = fakeCtx();
+  const waitingStarted = await waitingTool.execute(
+    "throwing-invalidator-wait",
+    { operation: "start", graph: makeChainGraph() },
+    undefined,
+    undefined,
+    waitingCtx,
+  );
+  waitingTool.renderResult?.(
+    waitingStarted as never,
+    { expanded: false, isPartial: false },
+    { fg: (_color: string, text: string) => text, bold: (text: string) => text } as never,
+    {
+      args: { operation: "start" },
+      state: {},
+      lastComponent: undefined,
+      invalidate: () => {
+        throw new Error("host invalidator failed");
+      },
+    } as never,
+  );
+  const waitingRunId = (waitingStarted.details as { result: { runId: string } }).result.runId;
+  const waitTool = createWaitForWorkflowTool({ registry });
+  const waiting = waitTool.execute("wait", { runId: waitingRunId }, undefined, undefined, waitingCtx);
+  await Promise.resolve();
+  waitingExecutor.deferNode("a").resolve();
+  const waited = await waiting;
+  assert.equal((waited.details as { result: { run: GraphRunSnapshot } }).result.run.state, "succeeded");
+  assert.equal(completions.length, 1, "the wait claim still suppresses the duplicate relay");
+  assert.equal(waitingCtx.__recordings.notifyCalls.length, 1);
+  assert.ok(waitingCtx.__recordings.setStatusCalls.length > 0);
 });
 
 test("a completion callback failure does not break a successful run", async () => {
