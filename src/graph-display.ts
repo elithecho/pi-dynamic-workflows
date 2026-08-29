@@ -101,13 +101,14 @@ export function renderGraphSnapshotLines(
   runningFrame = "⟳",
   elapsedMs = snapshot.elapsedMs,
 ): string[] {
-  const runningIndicator = snapshot.state === "running" ? ` ${runningFrame}` : "";
-  const lines: string[] = [
-    `◆ workflow_graph: ${snapshot.graphId} (${snapshot.runId}) — ${snapshot.state}${runningIndicator} — turns ${snapshot.turnCount} — elapsed ${formatGraphElapsed(elapsedMs)}`,
-  ];
+  const lines: string[] = [`◆ workflow_graph: ${snapshot.graphId} (${snapshot.runId}) — ${snapshot.state}`];
+  const liveElapsedDeltaMs = Math.max(0, elapsedMs - snapshot.elapsedMs);
   for (const node of snapshot.nodes) {
     let line = `  ${NODE_ICONS[node.state]} ${node.id} [${node.state}] attempt ${node.attempt}`;
-    if (node.state === "skipped") line += ` (reason: ${node.skipReason})`;
+    if (node.state === "running") {
+      const nodeElapsedMs = Math.max(0, (node.elapsedMs ?? 0) + liveElapsedDeltaMs);
+      line += ` — running ${runningFrame} — turns ${node.turnCount ?? 0} — elapsed ${formatGraphElapsed(nodeElapsedMs)}`;
+    } else if (node.state === "skipped") line += ` (reason: ${node.skipReason})`;
     else if (node.state === "failed") line += ` (error: ${node.error.code})`;
     lines.push(line);
   }

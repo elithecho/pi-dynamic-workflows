@@ -159,6 +159,9 @@ interface NodeRuntime {
   state: NodeState;
   attempt: number;
   readonly artifactIds: string[];
+  turnCount: number;
+  startedAtMonotonicMs?: number;
+  elapsedMs: number;
   error?: GraphError;
   skipReason?: SkipReason;
   retryTimer?: ReturnType<typeof setTimeout>;
@@ -292,7 +295,14 @@ class GraphRunEngine implements GraphRunHandle {
     }
     this.graphId = graph.id;
     this.maxConcurrency = graph.budgets?.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
-    this.runtimes = graph.nodes.map((node) => ({ node, state: "pending" as NodeState, attempt: 0, artifactIds: [] }));
+    this.runtimes = graph.nodes.map((node) => ({
+      node,
+      state: "pending" as NodeState,
+      attempt: 0,
+      artifactIds: [],
+      turnCount: 0,
+      elapsedMs: 0,
+    }));
     this.runtimeById = new Map(this.runtimes.map((runtime) => [runtime.node.id, runtime]));
     this.incoming = groupEdges(graph, (edge) => edge.to);
     this.outgoing = groupEdges(graph, (edge) => edge.from);
@@ -447,10 +457,18 @@ class GraphRunEngine implements GraphRunHandle {
   }
 
   private nodeSnapshot(runtime: NodeRuntime): NodeSnapshot {
+    const nodeElapsedMs =
+      runtime.startedAtMonotonicMs === undefined
+        ? 0
+        : runtime.state === "running"
+          ? Math.max(runtime.elapsedMs, Math.max(0, this.monotonicNow() - runtime.startedAtMonotonicMs))
+          : runtime.elapsedMs;
     const base = {
       id: runtime.node.id,
       attempt: runtime.attempt,
       artifactIds: Object.freeze([...runtime.artifactIds]),
+      turnCount: runtime.turnCount,
+      elapsedMs: Number.isFinite(nodeElapsedMs) ? nodeElapsedMs : runtime.elapsedMs,
     };
     if (runtime.state === "failed") {
       return deepFreeze({
@@ -471,6 +489,14 @@ class GraphRunEngine implements GraphRunHandle {
 
   private transition(runtime: NodeRuntime, to: NodeState, skipReason?: SkipReason): void {
     if (runtime.state === to) return;
+    if (to === "running" && runtime.startedAtMonotonicMs === undefined) {
+      const startedAt = this.monotonicNow();
+      runtime.startedAtMonotonicMs = Number.isFinite(startedAt) ? startedAt : this.startedAtMonotonicMs;
+    }
+    if (runtime.state === "running" && to !== "running" && runtime.startedAtMonotonicMs !== undefined) {
+      const elapsed = this.monotonicNow() - runtime.startedAtMonotonicMs;
+      if (Number.isFinite(elapsed)) runtime.elapsedMs = Math.max(runtime.elapsedMs, Math.max(0, elapsed));
+    }
     runtime.state = to;
     if (to === "skipped") runtime.skipReason = skipReason;
     this.emit({ type: "node_state_changed", runId: this.runId, node: this.nodeSnapshot(runtime) });
@@ -766,7 +792,9 @@ class GraphRunEngine implements GraphRunHandle {
 
   private recordTurn(runtime: NodeRuntime): void {
     if (this.isTerminal() || runtime.state !== "running") return;
-    this.turnCount += 1;
+    runtime.turnCount += 1;
+    if (runtime.turnCount <= this.turnCount) return;
+    this.turnCount = runtime.turnCount;
     this.emit({ type: "turn_started", runId: this.runId, turnCount: this.turnCount });
   }
 

@@ -411,7 +411,7 @@ test("failure with retries: maxAttempts honored, waiting_retry observable, depen
   assert.equal(sawWaiting, true, "waiting_retry was observable between attempts");
 });
 
-test("turn count is aggregate, monotonic, and includes retries", async () => {
+test("turn count is a per-node high-water mark and includes retries", async () => {
   const graph: GraphSpec = {
     version: 1,
     id: "turns",
@@ -438,7 +438,34 @@ test("turn count is aggregate, monotonic, and includes retries", async () => {
   });
   assert.equal(snapshot.state, "succeeded");
   assert.equal(snapshot.turnCount, 3);
+  assert.equal(snapshot.nodes[0]?.turnCount, 3);
   assert.deepEqual(turnCounts, [1, 2, 3]);
+});
+
+test("parallel node turns count once at graph level and remain visible per node", async () => {
+  const graph: GraphSpec = {
+    version: 1,
+    id: "parallel-turns",
+    name: "parallel-turns",
+    nodes: ["a", "b", "c"].map((id) => ({ kind: "agent" as const, id, prompt: id })),
+    edges: [],
+  };
+  const snapshot = await runGraph(graph, {
+    parentContext: parent,
+    executor: {
+      async execute(request): Promise<NodeExecutorResult> {
+        request.onTurnStart?.();
+        return { ok: true, output: { finalText: request.node.id } };
+      },
+    },
+  });
+
+  assert.equal(snapshot.state, "succeeded");
+  assert.equal(snapshot.turnCount, 1);
+  assert.deepEqual(
+    snapshot.nodes.map((node) => node.turnCount),
+    [1, 1, 1],
+  );
 });
 
 test("monotonic elapsed time starts at runtime start and freezes at terminal", async () => {

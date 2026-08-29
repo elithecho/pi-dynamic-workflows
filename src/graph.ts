@@ -180,6 +180,10 @@ export interface NodeSnapshotBase {
   readonly id: string;
   readonly attempt: number;
   readonly artifactIds: readonly string[];
+  /** SDK turn_start events observed for this node across retries. */
+  readonly turnCount?: number;
+  /** Monotonic elapsed duration since this node first started. */
+  readonly elapsedMs?: number;
 }
 
 export type NodeSnapshot = NodeSnapshotBase &
@@ -206,7 +210,7 @@ export interface GraphRunSnapshotBase {
   readonly startedAtEpochMs: number;
   /** Monotonic elapsed duration; running snapshots calculate this, terminal snapshots freeze it. */
   readonly elapsedMs: number;
-  /** Aggregate SDK turn_start events across every child session and retry. */
+  /** High-water SDK turn count across child sessions; parallel turns count once. */
   readonly turnCount: number;
   readonly nodes: readonly NodeSnapshot[];
   readonly artifacts: readonly Artifact[];

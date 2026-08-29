@@ -804,7 +804,7 @@ test("wait exposes only the canonical terminal answer and invokes completion onc
     {} as never,
   );
   assert.match(renderedStart?.render(120).join("\n") ?? "", /◆ workflow_graph: chain/);
-  assert.match(renderedStart?.render(120).join("\n") ?? "", /turns 0/);
+  assert.doesNotMatch(renderedStart?.render(120).join("\n") ?? "", /turns 0/);
 
   const waited = await tool.execute("call-2", { operation: "wait", runId }, undefined, undefined, ctx);
   const waitDetails = waited.details as { result: { completed: boolean; run: GraphRunSnapshot } };

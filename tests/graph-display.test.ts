@@ -34,7 +34,14 @@ function snapshotBase(): GraphRunSnapshotBase {
 }
 
 function runningSnapshot(): GraphRunSnapshot {
-  return { ...snapshotBase(), state: "running" };
+  return {
+    ...snapshotBase(),
+    state: "running",
+    nodes: [
+      ...snapshotBase().nodes,
+      { id: "d", attempt: 1, artifactIds: [], state: "running", turnCount: 2, elapsedMs: 65_000 },
+    ],
+  };
 }
 
 test("formatGraphElapsed uses compact second and minute boundaries", () => {
@@ -53,13 +60,13 @@ test("formatGraphElapsed uses compact second and minute boundaries", () => {
 
 test("renderGraphSnapshotLines renders the header, node lines, and usage", () => {
   const lines = renderGraphSnapshotLines(runningSnapshot());
-  assert.equal(lines.length, 5);
-  assert.ok(lines[0].includes("◆ workflow_graph:"));
-  assert.ok(lines[0].includes("chain (run-1) — running ⟳ — turns 2 — elapsed 1m 5s"));
+  assert.equal(lines.length, 6);
+  assert.equal(lines[0], "◆ workflow_graph: chain (run-1) — running");
   const joined = lines.join("\n");
   assert.ok(joined.includes("✓ a [succeeded] attempt 1"));
   assert.ok(joined.includes("- b [skipped] attempt 1 (reason: route_not_selected)"));
   assert.ok(joined.includes("✗ c [failed] attempt 2 (error: model_unavailable)"));
+  assert.ok(joined.includes("● d [running] attempt 1 — running ⟳ — turns 2 — elapsed 1m 5s"));
   assert.ok(joined.includes("  usage: 1 in / 2 out"));
 });
 
@@ -160,11 +167,11 @@ test("createWidgetGraphDisplay updates the widget and status and notifies on com
     theme: unknown,
   ) => { render(width: number): string[]; dispose(): void };
   const widget = widgetFactory({ requestRender() {} }, {});
-  assert.match(widget.render(120)[0] ?? "", /running ⠋ — turns 2 — elapsed 1m 5s/);
+  assert.match(widget.render(120).join("\n"), /d \[running\].*running ⠋ — turns 2 — elapsed 1m 5s/);
   displayMonotonicNow = 61_000;
-  assert.match(widget.render(120)[0] ?? "", /running ⠋ — turns 2 — elapsed 2m 5s/);
+  assert.match(widget.render(120).join("\n"), /d \[running\].*running ⠋ — turns 2 — elapsed 2m 5s/);
   displayMonotonicNow = 2_000;
-  assert.match(widget.render(120)[0] ?? "", /running ⠋ — turns 2 — elapsed 2m 5s/);
+  assert.match(widget.render(120).join("\n"), /d \[running\].*running ⠋ — turns 2 — elapsed 2m 5s/);
   widget.dispose();
   assert.ok(
     calls.some((call) => call.kind === "setStatus" && call.value === "workflow_graph run-1: running • turns 2"),
@@ -263,10 +270,10 @@ test("default running updates survive an RPC-like host ignoring component factor
   const widgetCalls = calls.filter((call) => call.kind === "setWidget");
   assert.ok(Array.isArray(widgetCalls[0]?.value), "static lines are published first");
   assert.equal(typeof widgetCalls[1]?.value, "function", "interactive component is attempted second");
-  assert.match(retainedLines?.[0] ?? "", /elapsed 1m 5s/);
+  assert.match(retainedLines?.join("\n") ?? "", /d \[running\].*elapsed 1m 5s/);
 
   display.complete({ ...snapshotBase(), state: "succeeded", finalAnswer: "done" });
-  assert.match(retainedLines?.[0] ?? "", /elapsed 1m 5s/);
+  assert.equal(retainedLines?.[0], "◆ workflow_graph: chain (run-1) — succeeded");
 });
 
 test("widget live peak remains below later terminal duration after epoch rollback", () => {
@@ -276,6 +283,7 @@ test("widget live peak remains below later terminal duration after epoch rollbac
   const display = createWidgetGraphDisplay(ctx, { monotonicNow: () => monotonicNow });
   const running: GraphRunSnapshot = {
     ...snapshotBase(),
+    nodes: runningSnapshot().nodes,
     startedAtEpochMs: 1_000,
     elapsedMs: 1_000,
     state: "running",
@@ -288,9 +296,9 @@ test("widget live peak remains below later terminal duration after epoch rollbac
     factoryCall.value as (tui: unknown, theme: unknown) => { render(width: number): string[]; dispose(): void }
   )({ requestRender() {} }, {});
   monotonicNow = 4_000;
-  assert.match(widget.render(120)[0] ?? "", /elapsed 4s/);
+  assert.match(widget.render(120).join("\n"), /d \[running\].*elapsed 1m 8s/);
   monotonicNow = 2_000;
-  assert.match(widget.render(120)[0] ?? "", /elapsed 4s/);
+  assert.match(widget.render(120).join("\n"), /d \[running\].*elapsed 1m 8s/);
   widget.dispose();
 
   calls.length = 0;
@@ -304,7 +312,7 @@ test("widget live peak remains below later terminal duration after epoch rollbac
   assert.equal(terminalSnapshot.elapsedMs, 4_500);
   display.complete(terminalSnapshot);
   const terminal = calls.find((call) => call.kind === "setWidget");
-  assert.match((terminal?.value as string[])[0] ?? "", /elapsed 4s/);
+  assert.equal((terminal?.value as string[])[0], "◆ workflow_graph: chain (run-1) — succeeded");
 });
 
 test("sequential completions retain only the latest terminal graph", () => {
