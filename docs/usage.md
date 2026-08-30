@@ -95,7 +95,7 @@ compilation. It is the most verbose surface and not recommended for agent author
   queryable after the Pi process exits or restarts. If the run is already terminal, it safely returns
   its snapshot without claiming it.
 - The `start` tool-result row refreshes with current progress; no bottom widget is used. When the
-  run reaches a terminal state, the extension normally sends one custom follow-up that wakes the parent unless
+  run reaches a terminal state, the extension normally sends one user follow-up that always wakes the parent unless
   `wait_for_workflow` claimed the run first; successful runs include only the canonical final answer
   from their successful topology sink(s). Intermediate node artifacts are never relayed. Do not rely
   on an exact-once terminal notification if waiter abortion races with completion; query the run by

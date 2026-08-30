@@ -8,15 +8,9 @@ import type { createWorkflowGraphTool } from "../src/graph-tool.js";
 import type { createWaitForWorkflowTool } from "../src/wait-for-workflow-tool.js";
 
 interface SentMessage {
-  readonly message: {
-    readonly customType: string;
-    readonly content: string;
-    readonly display: boolean;
-    readonly details?: unknown;
-  };
+  readonly content: string;
   readonly options?: {
-    readonly deliverAs?: "steer" | "followUp" | "nextTurn";
-    readonly triggerTurn?: boolean;
+    readonly deliverAs?: "steer" | "followUp";
   };
 }
 
@@ -92,6 +86,7 @@ function installExtension(executor: NodeExecutor): {
   readonly tool: WorkflowGraphTool;
   readonly waitTool: WaitForWorkflowTool;
   readonly sent: SentMessage[];
+  readonly customMessageCount: number;
   readonly registeredToolNames: string[];
   readonly activationCalls: string[][];
   activateSessionStart(): void;
@@ -99,6 +94,7 @@ function installExtension(executor: NodeExecutor): {
   const tools: unknown[] = [];
   const sent: SentMessage[] = [];
   const activationCalls: string[][] = [];
+  let customMessageCount = 0;
   let activeTools = ["existing_tool"];
   let sessionStartHandler: (() => void) | undefined;
   const pi = {
@@ -111,8 +107,11 @@ function installExtension(executor: NodeExecutor): {
       activeTools = next;
       activationCalls.push(next);
     },
-    sendMessage(message: SentMessage["message"], options: SentMessage["options"]) {
-      sent.push({ message, options });
+    sendMessage() {
+      customMessageCount += 1;
+    },
+    sendUserMessage(content: string, options: SentMessage["options"]) {
+      sent.push({ content, options });
     },
     on(event: string, handler: () => void) {
       if (event === "session_start") sessionStartHandler = handler;
@@ -130,6 +129,9 @@ function installExtension(executor: NodeExecutor): {
     tool,
     waitTool,
     sent,
+    get customMessageCount() {
+      return customMessageCount;
+    },
     registeredToolNames,
     activationCalls,
     activateSessionStart() {
@@ -206,7 +208,7 @@ test("pre-aborted wait_for_workflow never claims and natural completion relays o
   gate.resolve();
   await tool.execute("call-3", { operation: "wait", runId }, undefined, undefined, fakeContext());
   assert.equal(sent.length, 1);
-  assert.match(sent[0]?.message.content ?? "", /CANONICAL/);
+  assert.match(sent[0]?.content ?? "", /CANONICAL/);
 });
 
 test("mid-wait abort releases its claim before natural success and relays once", async () => {
@@ -234,7 +236,7 @@ test("mid-wait abort releases its claim before natural success and relays once",
   gate.resolve();
   await tool.execute("call-3", { operation: "wait", runId }, undefined, undefined, fakeContext());
   assert.equal(sent.length, 1);
-  assert.match(sent[0]?.message.content ?? "", /CANONICAL/);
+  assert.match(sent[0]?.content ?? "", /CANONICAL/);
 });
 
 test("concurrent wait claims survive one waiter aborting", async () => {
@@ -313,7 +315,8 @@ test("extension relays exactly one terminal success with only the canonical answ
       return { ok: true, output: { finalText: request.node.id === "final" ? "CANONICAL" : "INTERMEDIATE" } };
     },
   };
-  const { tool, sent } = installExtension(executor);
+  const installed = installExtension(executor);
+  const { tool, sent } = installed;
   const started = await tool.execute(
     "call-1",
     { operation: "start", graph: graph() },
@@ -326,14 +329,12 @@ test("extension relays exactly one terminal success with only the canonical answ
 
   assert.equal(sent.length, 1);
   assert.equal(sent[0]?.options?.deliverAs, "followUp");
-  assert.equal(sent[0]?.options?.triggerTurn, true);
-  assert.equal(sent[0]?.message.customType, "workflow_graph_completion");
-  assert.match(sent[0]?.message.content ?? "", /CANONICAL/);
-  assert.doesNotMatch(sent[0]?.message.content ?? "", /INTERMEDIATE/);
-  assert.deepEqual(sent[0]?.message.details, { runId, state: "succeeded", finalAnswer: "CANONICAL" });
+  assert.match(sent[0]?.content ?? "", /CANONICAL/);
+  assert.doesNotMatch(sent[0]?.content ?? "", /INTERMEDIATE/);
+  assert.equal(installed.customMessageCount, 0, "completion must use the always-triggering user-message path");
 });
 
-test("extension bounds large terminal relay but preserves the full snapshot answer", async () => {
+test("extension bounds a large terminal relay answer", async () => {
   const large = "z".repeat(6_000);
   const executor: NodeExecutor = {
     async execute(request) {
@@ -352,10 +353,9 @@ test("extension bounds large terminal relay but preserves the full snapshot answ
   await tool.execute("call-2", { operation: "wait", runId }, undefined, undefined, fakeContext());
 
   assert.equal(sent.length, 1);
-  assert.match(sent[0]?.message.content ?? "", /Final answer:/);
-  assert.match(sent[0]?.message.content ?? "", /… \[truncated\]/);
-  assert.ok((sent[0]?.message.content.length ?? 0) < 5_000);
-  assert.equal((sent[0]?.message.details as { finalAnswer: string }).finalAnswer, large);
+  assert.match(sent[0]?.content ?? "", /Final answer:/);
+  assert.match(sent[0]?.content ?? "", /… \[truncated\]/);
+  assert.ok((sent[0]?.content.length ?? 0) < 5_000);
 });
 
 test("extension relays actionable failure metadata without artifacts", async () => {
@@ -385,8 +385,8 @@ test("extension relays actionable failure metadata without artifacts", async () 
   await tool.execute("call-2", { operation: "wait", runId }, undefined, undefined, fakeContext());
 
   assert.equal(sent.length, 1);
-  assert.match(sent[0]?.message.content ?? "", /model_unavailable/);
-  assert.match(sent[0]?.message.content ?? "", /node=broken/);
-  assert.match(sent[0]?.message.content ?? "", /model failed/);
-  assert.doesNotMatch(sent[0]?.message.content ?? "", /finalText|artifact/i);
+  assert.match(sent[0]?.content ?? "", /model_unavailable/);
+  assert.match(sent[0]?.content ?? "", /node=broken/);
+  assert.match(sent[0]?.content ?? "", /model failed/);
+  assert.doesNotMatch(sent[0]?.content ?? "", /finalText|artifact/i);
 });
