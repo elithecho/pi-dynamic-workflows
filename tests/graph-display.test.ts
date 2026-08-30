@@ -63,10 +63,11 @@ test("renderGraphSnapshotLines renders the header, node lines, and usage", () =>
   assert.equal(lines.length, 6);
   assert.equal(lines[0], "◆ workflow_graph: chain (run-1) — running");
   const joined = lines.join("\n");
-  assert.ok(joined.includes("✓ a [succeeded] attempt 1"));
-  assert.ok(joined.includes("- b [skipped] attempt 1 (reason: route_not_selected)"));
-  assert.ok(joined.includes("✗ c [failed] attempt 2 (error: model_unavailable)"));
-  assert.ok(joined.includes("● d [running] attempt 1 — running ⟳ — turns 2 — elapsed 1m 5s"));
+  assert.ok(joined.includes("✓ a [succeeded]"));
+  assert.ok(joined.includes("- b [skipped] (reason: route_not_selected)"));
+  assert.ok(joined.includes("✗ c [failed] (error: model_unavailable)"));
+  assert.ok(joined.includes("● d [running] — running ⟳ — turns 2 — elapsed 1m 5s"));
+  assert.ok(!joined.includes("attempt"));
   assert.ok(joined.includes("  usage: 1 in / 2 out"));
 });
 
